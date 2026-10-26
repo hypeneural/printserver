@@ -16,7 +16,7 @@ async function setup(){
  return {dir,root,close:async()=>{await new Promise(r=>server.close(r));await rm(dir,{recursive:true,force:true})}};
 }
 async function call(root,path,body,role='admin',method='POST'){
- const response=await fetch(root+path,{method,headers:{Authorization:'Bearer '+(role==='admin'?ADMIN:AGENT),'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{body:'{}'})});
+ const response=await fetch(root+path,{method,headers:{Authorization:'Bearer '+(role==='admin'?ADMIN:AGENT),'Content-Type':'application/json'},...(method==='POST'?{body:JSON.stringify(body??{})}:{})});
  return {status:response.status,body:await response.json()};
 }
 test('PDF is 100x40 mm, ASCII-safe, and contains xref',()=>{
@@ -92,6 +92,7 @@ test('uncertain ACK is final and not retried',async()=>{
   assert.equal(ack.body.job.state,'unknown');
   assert.equal((await call(a.root,'/v1/agent/claim',{},'agent')).body.job,null);
   assert.equal((await call(a.root,'/v1/jobs',data)).status,409);
+ }finally{await a.close()}
 });
 test('no secrets means fail closed',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'evyd-printserver-'));
