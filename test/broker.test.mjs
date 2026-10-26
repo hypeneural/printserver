@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm,readFile,mkdir,readdir} from 'node:fs/promises';
+import {mkdtemp,rm,readFile,mkdir,readdir,rename} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {labelPdf} from '../src/pdf.mjs';
@@ -126,6 +126,42 @@ test('persistence failure cannot make an uncommitted label claimable',async()=>{
   await new Promise(resolve=>server.close(resolve));
   await rm(dir,{recursive:true,force:true});
  }
+});
+
+test('failed claim commit never loses a queued job or exposes an uncommitted lease',async()=>{
+ const a=await setup();
+ const file=join(a.dir,'state.json'),backup=file+'.backup';
+ try{
+  const created=await call(a.root,'/v1/jobs',data);
+  assert.equal(created.status,201);
+  await rename(file,backup);await mkdir(file);
+  const failed=await call(a.root,'/v1/agent/claim',{},'agent');
+  assert.equal(failed.status,500);
+  await rm(file,{recursive:true});await rename(backup,file);
+  const claimed=await call(a.root,'/v1/agent/claim',{},'agent');
+  assert.equal(claimed.status,200);
+  assert.equal(claimed.body.job.job_id,created.body.job.job_id);
+  assert.equal((await call(a.root,'/v1/agent/claim',{},'agent')).body.job,null);
+ }finally{await a.close()}
+});
+test('failed acknowledgment commit retains lease and PDF until a confirmed ACK',async()=>{
+ const a=await setup();
+ const file=join(a.dir,'state.json'),backup=file+'.backup';
+ try{
+  await call(a.root,'/v1/jobs',data);
+  const claimed=(await call(a.root,'/v1/agent/claim',{},'agent')).body.job;
+  await rename(file,backup);await mkdir(file);
+  const payload={job_id:claimed.job_id,lease_token:claimed.lease_token,result:'spooled'};
+  const failed=await call(a.root,'/v1/agent/ack',payload,'agent');
+  assert.equal(failed.status,500);
+  await rm(file,{recursive:true});await rename(backup,file);
+  const ok=await call(a.root,'/v1/agent/ack',payload,'agent');
+  assert.equal(ok.status,200);
+  assert.equal(ok.body.job.state,'spooled');
+  const disk=await readFile(file,'utf8');
+  assert.ok(!disk.includes('pdf_base64'));
+  assert.ok(!disk.includes('lease_token'));
+ }finally{await a.close()}
 });
 test('very long uppercase text is bounded within calibrated printable width',()=>{
  const pdf=labelPdf({...data,customer_name:'W'.repeat(120),package_name:'W'.repeat(120)}).toString('latin1');
