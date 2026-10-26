@@ -40,6 +40,7 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
   seenArrivalOrders=new Set(obj.seen_arrival_orders||[]);
   for(const job of jobs)if(job.purpose==='arrival'&&Number.isSafeInteger(job.order_id))seenArrivalOrders.add(job.order_id);
  }catch(e){if(e.code==='ENOENT')jobs=[];else throw e}
+ let lastAgentPollAt=null;
  let serial=Promise.resolve();
  const exclusive=fn=>{
   const p=serial.then(fn);
@@ -49,7 +50,7 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
  const save=async()=>{
   const tmp=file+'.'+process.pid+'.'+randomBytes(4).toString('hex')+'.tmp';
   try{
-   await writeFile(tmp,JSON.stringify({version:2,jobs,seen_arrival_orders:[...seenArrivalOrders]}),{mode:0o600,flag:'wx'});
+   await writeFile(tmp,JSON.stringify({version:2,jobs,seen_arrival_orders:[...seenArrivalOrders]}),{mode:0o600,flag:'wx',flush:true});
    await rename(tmp,file);
   }finally{
    // A disk error must not leave orphan temporary snapshots containing customer data.
@@ -74,7 +75,13 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
   ...(j.completed_at?{completed_at:j.completed_at}:{}),
   ...(j.error_code?{error_code:j.error_code}:{})
  });
- const prune=()=>{
+ const persistPrune=async()=>{
+  // Expiration/deletion must not remain visible in memory if its disk write fails.
+  const snapshot=jobs.map(j=>({...j}));
+  if(!prune())return;
+  try{await save()}catch(e){jobs=snapshot;throw e}
+ };
+  const prune=()=>{
   const ts=now();
   let changed=false;
   for(const j of jobs){
@@ -87,7 +94,7 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
   return changed||jobs.length!==before;
  };
  // Idle poll/GET never writes to disk unless state has actually changed.
- const sweeper=setInterval(()=>{void exclusive(async()=>{if(prune())await save()}).catch(()=>{})},60000);
+ const sweeper=setInterval(()=>{void exclusive(persistPrune).catch(()=>{})},60000);
  sweeper.unref();
  const respond=(res,status,obj)=>{
   res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
@@ -110,11 +117,22 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
    const expected=role==='agent'?agentToken:adminToken;
    const auth=req.headers.authorization||'';
    if(!safeEqual(auth.startsWith('Bearer ')?auth.slice(7):'',expected))throw fail(401,'unauthorized');
-   if(req.method==='POST'&&u.pathname==='/v1/jobs'&&role==='admin'){
+   if(req.method==='GET'&&u.pathname==='/v1/agent/status'&&role==='admin'){
+    // Transient signal derived from authenticated polls; no PII and no disk writes.
+    // Agent polls only while printer and spooler report ready. A reboot starts offline.
+    const age=lastAgentPollAt===null?null:Math.max(0,now()-lastAgentPollAt);
+    return respond(res,200,{
+     agent_online:age!==null&&age<=30000,
+     agent_poll_age_seconds:age===null?null:Math.floor(age/1000),
+     status_source:'authenticated_agent_poll',
+     physical_print_verified:false
+    });
+   }
+      if(req.method==='POST'&&u.pathname==='/v1/jobs'&&role==='admin'){
     const body=await readJson(req);
     if(!validOrder(body))throw fail(422,'invalid_or_unconfirmed_order');
     return await exclusive(async()=>{
-     if(prune())await save();
+     await persistPrune();
      const existing=jobs.find(j=>j.purpose==='arrival'&&j.order_id===body.order_id);
      if(existing){
       if(existing.state==='expired'||existing.state==='failed'||existing.state==='unknown')return respond(res,409,{error:'manual_reconciliation_required',job:publicJob(existing)});
@@ -147,7 +165,7 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
     const id=decodeURIComponent(u.pathname.slice('/v1/jobs/'.length));
     if(!uuid.test(id))throw fail(400,'invalid_job_id');
     return await exclusive(async()=>{
-     if(prune())await save();
+     await persistPrune();
      const job=jobs.find(x=>x.job_id===id);
      return job?respond(res,200,{job:publicJob(job)}):respond(res,404,{error:'not_found'});
     });
@@ -156,9 +174,10 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
     // No request arguments: agents cannot choose arbitrary data to print.
     await readJson(req);
     return await exclusive(async()=>{
-     const changed=prune();
+     await persistPrune();
+     lastAgentPollAt=now();
      const job=jobs.find(x=>x.state==='queued');
-     if(!job){if(changed)await save();return respond(res,200,{job:null})}
+     if(!job)return respond(res,200,{job:null});
      await persistJobMutation(job,()=>{
       job.state='claimed';
       job.lease_token=randomBytes(32).toString('hex');
