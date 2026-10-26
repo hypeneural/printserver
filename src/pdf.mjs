@@ -7,7 +7,10 @@ function clamp(s,max){return ASCII(s).trim().slice(0,max)}
 export function labelPdf({order_id,customer_name,package_name}){
  if(!Number.isSafeInteger(order_id)||order_id<1)throw Error('invalid_order_id');
  if(typeof customer_name!=='string'||customer_name.trim().length<2||customer_name.length>120)throw Error('invalid_customer_name');
- const id=clamp(order_id,12),name=clamp(customer_name,30),pkg=clamp(package_name||'Pedido de fotos',38);
+ // Conservative widths for Helvetica-Bold on the 100mm physical page:
+ // name: 22 x 0.945 x 11.5pt < 250pt; package: 27 x 0.945 x 9.5pt < 250pt.
+ // Text begins at x=16pt and must finish before x=267pt.
+ const id=clamp(order_id,12),name=clamp(customer_name,22),pkg=clamp(package_name||'Pedido de fotos',27);
  // Physical page in PDF points: 100x40 mm.
  // Enhanced contrast (all lines bold, 1pt border), centered margins and raised footer for tear safety.
  const stream=[
