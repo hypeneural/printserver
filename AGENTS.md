@@ -7,7 +7,7 @@
 - Repositório público: NÃO registrar PII real, segredos, PDFs de clientes, logs de pedidos ou binários de terceiros.
 
 ## Estado e liberação
-- Feature desligada no Windows: `enable_printing=false` **e** `calibration_confirmed_100x40=false`; broker só atende em `127.0.0.1`.
+- Configuração de exemplo é **OFF**: `enable_printing=false` e `calibration_confirmed_100x40=false`. O relatório do Antigravity informa um agente Windows e broker já **ON em produção**. Não inferir o estado LIVE por este exemplo; verificar G0 no host, conforme `docs/AUDITORIA_INTEGRACAO_E2E_LIVE_20261026.md`. O processo Node atende em `127.0.0.1`; acesso remoto passa pelo proxy TLS existente.
 - Não abrir portas no notebook; agente faz polling de saída para HTTPS.
 - PR #1 permanece Draft até homologação de uma etiqueta **sintética** física em `LABEL`, papel `Etiqueta` 100×40, USB001.
 - Respeitar `unknown`/409: não repetir impressão automaticamente. `spooled` não comprova papel impresso.
