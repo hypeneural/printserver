@@ -18,11 +18,11 @@
 2. `npm run check && npm test` — sem credenciais, rede externa ou impressora.
 3. Conferir GitHub Actions `PrintServer Validation`: testes Linux e parser PowerShell 5.1 Windows. Não repetir validação sem mudança de SHA.
 4. No AnnaHelena, read-only: `powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\Test-LabelPrinter.ps1`.
-5. Validar SumatraPDF com `-list-printers`; fazer um teste de impressão **sintético autorizado** com `paper=Etiqueta,noscale,disable-auto-rotation`.
-6. Só depois configurar `config.local.json`, ACL local do token e tarefa de login; homologar `-Once` com job sintético.
-7. Não fazer deploy de VPS, merge, criação de jobs com clientes reais ou enable_printing automaticamente.
+5. Seguir `docs/HOMOLOGACAO_ANTIGRAVITY_REVISADA_20261026.md`. Primeiro `scripts/Prepare-SumatraPortable.ps1` sem `-Install`, depois `-Install` somente com autorização; SHA-256 verificado. Validar `-console -list-printers` com mídia `Etiqueta`.\n6. Executar `node scripts/Create-SyntheticLabel.mjs`. O script `windows/Invoke-SyntheticPrintTest.ps1` é inerte sem `-AuthorizeSinglePrint`; imprimir uma única vez apenas após GO específico, sem retry automático.
+7. Só depois de confirmação **física** configurar `config.local.json`, ACL do token e tarefa de login; homologar `-Once` com job sintético e broker HTTPS validado.
+8. Não fazer deploy de VPS, merge, criação de jobs com clientes reais ou enable_printing automaticamente. Não usar `tls internal` para o cliente externo sem CA confiável.
 
-## Arquivos centrais
+## Plano/roteiro cirúrgico\n- `docs/HOMOLOGACAO_ANTIGRAVITY_REVISADA_20261026.md` e `docs/ANTIGRAVITY_PROMPT_CIRURGICO_20261026.md` prevalecem sobre um plano local não versionado.\n\n## Arquivos centrais
 - `src/broker.mjs`: fila persistente single process, auth MCP vs agent, tombstones permanentes, expiração de PDFs e estado incerto.
 - `src/pdf.mjs`: etiqueta básica 100×40 em PDF (não equivale à arte oficial CRM).
 - `windows/agent.ps1`: opção paper explícita, preflight, timeout de execução, checksum SHA-256, sem retry cego.
