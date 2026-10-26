@@ -3,10 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": {"node": ">=22"},
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node src/server.mjs",
     "test": "node --test test/*.test.mjs",
-    "check": "node --check src/pdf.mjs && node --check src/broker.mjs && node --check src/server.mjs"
+    "check": "node --check src/pdf.mjs && node --check src/broker.mjs && node --check src/server.mjs && node --check scripts/Create-SyntheticLabel.mjs",
+    "test:fixture": "node scripts/Create-SyntheticLabel.mjs"
   }
 }
