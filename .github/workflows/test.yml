@@ -25,7 +25,7 @@ jobs:
       - name: Parse Windows PowerShell 5.1 scripts without executing or printing
         shell: powershell
         run: |
-          $scripts = @('windows/agent.ps1', 'windows/install-task.ps1', 'scripts/Test-LabelPrinter.ps1', 'scripts/Prepare-SumatraPortable.ps1', 'windows/Invoke-SyntheticPrintTest.ps1')
+          $scripts = @('windows/agent.ps1', 'windows/install-task.ps1', 'scripts/Test-LabelPrinter.ps1', 'scripts/Prepare-SumatraPortable.ps1', 'windows/Invoke-SyntheticPrintTest.ps1', 'windows/Invoke-CrmArtworkPrintTest.ps1')
           foreach ($path in $scripts) {
             $tokens = $null
             $errors = $null
@@ -46,4 +46,8 @@ jobs:
           $dryPrint = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File windows/Invoke-SyntheticPrintTest.ps1
           if ($dryPrint -notmatch '^NOT_EXECUTED:') {
             throw 'Synthetic printing script did not fail closed without authorization'
+          }
+          $dryCrm = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File windows/Invoke-CrmArtworkPrintTest.ps1
+          if ($dryCrm -notmatch '^NOT_EXECUTED:') {
+            throw 'CRM artwork printing script did not fail closed without authorization'
           }
