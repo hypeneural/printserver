@@ -39,3 +39,11 @@ jobs:
           if ($config.enable_printing -ne $false -or $config.calibration_confirmed_100x40 -ne $false) {
             throw 'Example configuration must remain fail-closed'
           }
+          $dryInstall = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/Prepare-SumatraPortable.ps1 | ConvertFrom-Json
+          if ($dryInstall.writes_performed -ne $false -or $dryInstall.install_requested -ne $false) {
+            throw 'Portable installer dry-run performed a write'
+          }
+          $dryPrint = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File windows/Invoke-SyntheticPrintTest.ps1
+          if ($dryPrint -notmatch '^NOT_EXECUTED:') {
+            throw 'Synthetic printing script did not fail closed without authorization'
+          }
