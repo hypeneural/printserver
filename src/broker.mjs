@@ -2,7 +2,7 @@
 // Never stores CRM credentials and never changes orders or sends customer messages.
 import http from 'node:http';
 import {createHash,randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
-import {mkdir,readFile,writeFile,rename} from 'node:fs/promises';
+import {mkdir,readFile,writeFile,rename,unlink} from 'node:fs/promises';
 import {dirname} from 'node:path';
 import {labelPdf} from './pdf.mjs';
 
@@ -48,8 +48,13 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
  };
  const save=async()=>{
   const tmp=file+'.'+process.pid+'.'+randomBytes(4).toString('hex')+'.tmp';
-  await writeFile(tmp,JSON.stringify({version:2,jobs,seen_arrival_orders:[...seenArrivalOrders]}),{mode:0o600,flag:'wx'});
-  await rename(tmp,file);
+  try{
+   await writeFile(tmp,JSON.stringify({version:2,jobs,seen_arrival_orders:[...seenArrivalOrders]}),{mode:0o600,flag:'wx'});
+   await rename(tmp,file);
+  }finally{
+   // A disk error must not leave orphan temporary snapshots containing customer data.
+   await unlink(tmp).catch(e=>{if(e.code!=='ENOENT')throw e});
+  }
  };
  const publicJob=j=>({
   job_id:j.job_id,request_id:j.request_id,order_id:j.order_id,
@@ -115,7 +120,14 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
      };
      jobs.push(job);
      seenArrivalOrders.add(body.order_id);
-     await save();
+     try{
+      await save();
+     }catch(e){
+      // If persistence fails, never leave an uncommitted job claimable by the agent.
+      jobs.pop();
+      seenArrivalOrders.delete(body.order_id);
+      throw e;
+     }
      return respond(res,201,{replay:false,job:publicJob(job)});
     });
    }
