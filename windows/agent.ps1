@@ -1,11 +1,14 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$ConfigPath=(Join-Path $PSScriptRoot 'config.local.json'),
+    [string]$ConfigPath,
     [switch]$Once
 )
 $ErrorActionPreference='Stop'
 [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
+if([string]::IsNullOrWhiteSpace($ConfigPath)){
+    $ConfigPath=Join-Path $PSScriptRoot 'config.local.json'
+}
 
 if(!(Test-Path -LiteralPath $ConfigPath)){throw 'config.local.json não encontrado.'}
 $c=Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
