@@ -5,5 +5,6 @@
   "printer": "LABEL",
   "paper": "Etiqueta",
   "enable_printing": false,
-  "poll_seconds": 5
+  "poll_seconds": 5,
+  "calibration_confirmed_100x40": false
 }
