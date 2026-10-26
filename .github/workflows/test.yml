@@ -15,6 +15,7 @@ jobs:
           node-version: '22'
       - run: npm run check
       - run: npm test
+      - run: npm run test:fixture
   windows-powershell-syntax:
     runs-on: windows-latest
     permissions:
@@ -24,7 +25,7 @@ jobs:
       - name: Parse Windows PowerShell 5.1 scripts without executing or printing
         shell: powershell
         run: |
-          $scripts = @('windows/agent.ps1', 'windows/install-task.ps1', 'scripts/Test-LabelPrinter.ps1')
+          $scripts = @('windows/agent.ps1', 'windows/install-task.ps1', 'scripts/Test-LabelPrinter.ps1', 'scripts/Prepare-SumatraPortable.ps1', 'windows/Invoke-SyntheticPrintTest.ps1')
           foreach ($path in $scripts) {
             $tokens = $null
             $errors = $null
