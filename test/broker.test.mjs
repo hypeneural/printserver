@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm,readFile} from 'node:fs/promises';
+import {mkdtemp,rm,readFile,mkdir,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {labelPdf} from '../src/pdf.mjs';
@@ -100,4 +100,36 @@ test('no secrets means fail closed',async()=>{
   await assert.rejects(makeBroker({file:join(dir,'state.json'),adminToken:'short',agentToken:AGENT}),/secrets/);
   await assert.rejects(makeBroker({file:join(dir,'state.json'),adminToken:AGENT,agentToken:AGENT}),/secrets/);
  }finally{await rm(dir,{recursive:true,force:true})}
+});
+
+test('persistence failure cannot make an uncommitted label claimable',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'evyd-print-failed-save-'));
+ const file=join(dir,'state.json');
+ const broker=await makeBroker({file,adminToken:ADMIN,agentToken:AGENT});
+ const server=await broker.listen(0);
+ const root='http://127.0.0.1:'+server.address().port;
+ try{
+  // Block the atomic rename by replacing destination with a directory.
+  await mkdir(file);
+  const rejected=await call(root,'/v1/jobs',data);
+  assert.equal(rejected.status,500);
+  assert.equal((await call(root,'/v1/agent/claim',{},'agent')).body.job,null,
+   'failed durable commit must not leave a printable in-memory job');
+  const leftovers=await readdir(dir);
+  assert.equal(leftovers.some(name=>name.includes('.tmp')),false,
+   'temporary snapshots must not retain customer data');
+  await rm(file,{recursive:true});
+  const accepted=await call(root,'/v1/jobs',data);
+  assert.equal(accepted.status,201);
+  assert.equal((await call(root,'/v1/agent/claim',{},'agent')).body.job.job_id,accepted.body.job.job_id);
+ }finally{
+  await new Promise(resolve=>server.close(resolve));
+  await rm(dir,{recursive:true,force:true});
+ }
+});
+test('very long uppercase text is bounded within calibrated printable width',()=>{
+ const pdf=labelPdf({...data,customer_name:'W'.repeat(120),package_name:'W'.repeat(120)}).toString('latin1');
+ assert.match(pdf,/\(W{22}\) Tj/);
+ assert.match(pdf,/\(W{27}\) Tj/);
+ assert.doesNotMatch(pdf,/\(W{28,}\) Tj/);
 });
