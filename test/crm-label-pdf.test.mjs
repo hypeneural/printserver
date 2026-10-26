@@ -1,0 +1,89 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {deflateSync} from 'node:zlib';
+import {createHash} from 'node:crypto';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {makeBroker} from '../src/broker.mjs';
+import {unpackCrmPng,crmPngToLabelPdf} from '../src/crm-label-pdf.mjs';
+const TABLE=Array.from({length:256},(_,n)=>{let c=n;for(let i=0;i<8;i++)c=(c&1)?0xedb88320^(c>>>1):c>>>1;return c>>>0});
+const crc32=b=>{let c=0xffffffff;for(const x of b)c=TABLE[(c^x)&255]^(c>>>8);return (c^0xffffffff)>>>0};
+const chunk=(type,b)=>{
+ const body=Buffer.concat([Buffer.from(type,'ascii'),b]),n=Buffer.alloc(4),crc=Buffer.alloc(4);
+ n.writeUInt32BE(b.length);crc.writeUInt32BE(crc32(body));return Buffer.concat([n,body,crc]);
+};
+function png(width=25,height=10,channels=4){
+ const header=Buffer.alloc(13);header.writeUInt32BE(width);header.writeUInt32BE(height,4);
+ header[8]=8;header[9]=channels===4?6:2;
+ const pixels=[];
+ for(let y=0;y<height;y++){
+  const row=Buffer.alloc(width*channels+1);row[0]=0;
+  for(let x=0;x<width;x++){
+   const o=1+x*channels,dark=(x+y)%3===0;
+   row[o]=row[o+1]=row[o+2]=dark?0:255;
+   if(channels===4)row[o+3]=255;
+  }
+  pixels.push(row);
+ }
+ return Buffer.concat([Buffer.from('89504e470d0a1a0a','hex'),chunk('IHDR',header),chunk('IDAT',deflateSync(Buffer.concat(pixels))),chunk('IEND',Buffer.alloc(0))]);
+}
+const ADMIN='A'.repeat(48),AGENT='B'.repeat(48);
+const body={order_id:5127,operator_id:'2',status_key:'waiting_product_retrieve',confirmed_by_operator:true,purpose:'arrival',request_id:'25f8a560-19d3-4f07-a1d6-33d8cf47715d',customer_name:'Pessoa Ficticia',package_name:'Natal Ficticio'};
+async function harness(){
+ const dir=await mkdtemp(join(tmpdir(),'crm-label-artwork-'));
+ const b=await makeBroker({file:join(dir,'jobs.json'),adminToken:ADMIN,agentToken:AGENT,requireCrmArtwork:true});
+ const s=await b.listen(0);
+ const root='http://127.0.0.1:'+s.address().port;
+ return {dir,root,close:async()=>{await new Promise(resolve=>s.close(resolve));await rm(dir,{recursive:true,force:true})}};
+}
+async function call(root,path,payload,key=ADMIN){
+ const r=await fetch(root+path,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(payload)});
+ return {code:r.status,data:await r.json()};
+}
+test('wraps exact RGB CRM raster in one physical 100x40 PDF without redrawing QR',()=>{
+ const input=png(250,100,3),decoded=unpackCrmPng(input);
+ assert.equal(decoded.width,250);assert.equal(decoded.height,100);assert.equal(decoded.alpha,null);
+ assert.equal(decoded.rgb[0],0);assert.equal(decoded.rgb[3],255);
+ const pdf=crmPngToLabelPdf(input).toString('latin1');
+ assert.match(pdf,/%PDF-1.4/);
+ assert.match(pdf,/MediaBox \[0 0 283\.46457 113\.38583\]/);
+ assert.match(pdf,/\/XObject/);
+ assert.match(pdf,/\/Width 250 \/Height 100/);
+ assert.ok(!pdf.includes('DISPONIVEL PARA RETIRADA'),'must not add a second layout/text layer');
+});
+test('validates alpha PNG and rejects altered CRC or unsupported media size',()=>{
+ const rgba=unpackCrmPng(png());
+ assert.equal(rgba.width,25);assert.equal(rgba.height,10);
+ const bad=png();bad[55]^=1;
+ assert.throws(()=>unpackCrmPng(bad),/crm_label_crc_failed/);
+ assert.throws(()=>unpackCrmPng(png(10,10)),/crm_label_invalid_dimensions/);
+});
+test('strict broker refuses plain fallback and prints only canonical verified PNG',async()=>{
+ const h=await harness();
+ try{
+  const noArt=await call(h.root,'/v1/jobs',body);
+  assert.equal(noArt.code,422);
+  const art=png(250,100,4);
+  const good={...body,label_source:'crm_canonical',label_png_base64:art.toString('base64'),
+   label_png_sha256:createHash('sha256').update(art).digest('hex')};
+  const accepted=await call(h.root,'/v1/jobs',good);
+  assert.equal(accepted.code,201);
+  assert.equal(accepted.data.job.render_source,'crm_canonical');
+  const claim=await call(h.root,'/v1/agent/claim',{},AGENT);
+  assert.equal(claim.code,200);
+  assert.match(Buffer.from(claim.data.job.pdf_base64,'base64').toString('latin1',0,30),/%PDF-1.4/);
+  const duplicate=await call(h.root,'/v1/jobs',good);
+  assert.equal(duplicate.code,200);assert.equal(duplicate.data.replay,true);
+ }finally{await h.close()}
+});
+test('corrupt or mismatched artwork never generates a print job',async()=>{
+ const h=await harness();
+ try{
+  const art=png(250,100,4),good={...body,label_source:'crm_canonical',
+   label_png_base64:art.toString('base64'),label_png_sha256:'0'.repeat(64)};
+  assert.equal((await call(h.root,'/v1/jobs',good)).code,422);
+  const claim=await call(h.root,'/v1/agent/claim',{},AGENT);
+  assert.equal(claim.data.job,null);
+ }finally{await h.close()}
+});
