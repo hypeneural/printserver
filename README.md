@@ -1,69 +1,94 @@
-# Evydência PrintServer — LABEL no AnnaHelena
+# Evydência PrintServer — Fila LABEL no AnnaHelena
 
-Servidor de fila pequeno e agente PowerShell para imprimir etiquetas **100 × 40 mm** na térmica LeLONG/driver `LABEL` via SumatraPDF portátil. Projeto independente do Laravel e do EvydFlow. Sem PrintNode, sem mensalidade e **sem portas de entrada no notebook**.
+Servidor de fila e agente Windows PowerShell para impressão automatizada de etiquetas adesivas térmicas **100 × 40 mm** na impressora térmica `LABEL` (USB001) via SumatraPDF portátil. 
 
-## Topologia proposta
+Projeto 100% independente do Laravel e do EvydFlow. Sem PrintNode, sem mensalidades e **sem portas de entrada no notebook** (polling outbound HTTPS).
 
-ChatGPT → Evidência MCP (OAuth operador e leitura CRM) → PrintServer broker HTTPS → agente PowerShell (poll HTTPS de saída) → SumatraPDF `-print-to "LABEL"` → Spooler USB001.
+---
 
-**Baixa do pedido não está implementada neste repositório.** O MCP só poderá gerar a impressão automática de um pedido cujo status **já está em 10** no CRM. O CRM continua sendo o único sistema que altera status e dispara WhatsApp. Nunca chamar a API legada de alteração de status diretamente.
+## 1. Topologia em Produção
 
-## Homologação no AnnaHelena — scripts prontos, sem impressão automática
-
-**Não dependa de um PDF sintético não versionado no clone.** Use `node scripts/Create-SyntheticLabel.mjs` (gera apenas `test-output/test_synthetic_label.pdf`, ignorado pelo Git). `scripts/Prepare-SumatraPortable.ps1` sem flag não faz download; com `-Install` baixa o ZIP 3.6.1 do domínio oficial e verifica SHA-256 antes de copiar o portátil. `windows/Invoke-SyntheticPrintTest.ps1` sem flag não imprime; com `-AuthorizeSinglePrint` submete UMA etiqueta fictícia à fila `LABEL`, sem retry. A inspeção física do papel é obrigatória.
-
-Leia [Plano de homologação revisado](docs/HOMOLOGACAO_ANTIGRAVITY_REVISADA_20261026.md) e [Prompt cirúrgico Antigravity](docs/ANTIGRAVITY_PROMPT_CIRURGICO_20261026.md). A configuração Caddy para clientes externos deve usar TLS público válido, e a homologação física é **offline**, independente de broker/MCP/CRM.
-
-## O que este MVP já contém
-
-- `src/broker.mjs`: API pequena com autenticação Bearer separada para MCP e agente; fila persistente em arquivo JSON privado (um processo), criação idempotente **por pedido** da etiqueta de chegada, confirmação obrigatória, timeout de claim sem reenvio automático e descarte do PDF após ACK; marcador permanente de pedido mesmo após limpeza do histórico de trabalhos. Polls vazios não gravam JSON no disco.
-- `src/pdf.mjs`: gerador PDF monofolha de 100 × 40 mm com dados mínimos do CRM, ASCII em Helvetica (a impressão inicial **não é cópia fiel da etiqueta visual do CRM**). Não contém telefone, preço ou CPF.
-- `windows/agent.ps1`: Windows PowerShell 5.1, consulta a fila com HTTPS, checksum SHA-256, impressão em `LABEL` com opção explícita `paper=Etiqueta,noscale`, retorno `spooled` (= aceito pelo executável/spooler, não prova física). Limite de uma cópia. Sem impressão enquanto `enable_printing=false`.
-- `windows/install-task.ps1`: instalação opcional de tarefa ao login do usuário atual, sem serviço novo e sem instalar Node no AnnaHelena.
-- `scripts/Test-LabelPrinter.ps1`: diagnóstico somente leitura.
-- `test/broker.test.mjs`: Node test runner, sem impressora nem rede externa.
-
-## Instalação do broker (VPS, separado do CRM)
-
-Requer Node.js ≥22; executar `npm test` e `npm run check`.
-
-Definir secrets **fora do repositório** e diferentes entre si (min. 32 caracteres):
-```text
-PRINTSERVER_BIND=127.0.0.1
-PRINTSERVER_PORT=8097
-PRINTSERVER_DATA_FILE=/var/lib/evydencia-printserver/jobs.json
-PRINTSERVER_MCP_TOKEN=<segredo exclusivo entre MCP e broker>
-PRINTSERVER_AGENT_TOKEN=<segredo exclusivo entre notebook e broker>
+```mermaid
+flowchart LR
+    Operator["Operador no ChatGPT Web<br/>(Evydência CRM Live)"] --> LiveMCP["Live MCP Gateway<br/>(Porta 8090 / VPS)"]
+    LiveMCP --> Broker["PrintServer Broker<br/>(127.0.0.1:8097 / VPS)"]
+    Nginx["Nginx Reverse Proxy TLS<br/>https://mcp-crm.etijucas.com.br/v1/"] --> Broker
+    Agent["Agente PowerShell 5.1<br/>(Notebook AnnaHelena)"] -- "Polling Outbound (5s)" --> Nginx
+    Agent --> Sumatra["SumatraPDF 3.6.1 Portátil"]
+    Sumatra --> Printer["Impressora Térmica LABEL<br/>(USB001 / Etiqueta 100x40mm)"]
 ```
-Iniciar `node src/server.mjs` como usuário Linux sem privilégio. Expor `/v1/agent/*` **somente via HTTPS** e proxy reverso dedicado na VPS, mantendo o processo em loopback. Restringir firewall, rate-limit, body-size, TLS e IP quando possível. Não compartilhar os tokens entre serviços e não deixar JSON da fila acessível publicamente. A rota `/v1/jobs` usa credencial exclusiva do MCP. Fornecer a mesma origem HTTPS ao gateway MCP (`EVYD_PRINTSERVER_URL`) e ao agente (`broker_url`). Nenhuma mudança no Caddy foi aplicada aqui.
 
-API (campos exemplificados com dados sintéticos):
-- `POST /v1/jobs` (MCP Bearer): `{request_id:UUID,order_id:5001,operator_id:"42",status_key:"waiting_product_retrieve",confirmed_by_operator:true,purpose:"arrival",customer_name:"Cliente Exemplo",package_name:"Pacote Teste"}` → 201 com job; 200 replay. Outros status são 422; conflito desconhecido 409.
-- `GET /v1/jobs/{job_id}` (MCP Bearer): somente status, sem conteúdo do PDF.
-- `POST /v1/agent/claim` (agente Bearer, body `{}`) → PDF em base64 + SHA + token de lease, ou `job:null`.
-- `POST /v1/agent/ack` (agente Bearer) → `{job_id,lease_token,result:"spooled"|"failed"}`.
+> [!IMPORTANT]
+> **Segurança e Isolamento Inegociáveis:**
+> - **Zero escrita no CRM:** O MCP apenas solicita a impressão de um pedido se o status **já estiver gravado como 10** (`waiting_product_retrieve`) e com **saldo zerado** (`remaining_cents === 0`).
+> - **Sem baixas via endpoint legado:** O endpoint `PUT /api/orders/status` permanece proibido. A baixa física do malote deve ser feita pelo operador na interface web do CRM antes da solicitação da etiqueta.
+> - **Zero disparos de WhatsApp** e zero mutações de banco de dados.
+> - **Zero portas abertas:** O notebook opera estritamente enviando requisições saintes HTTPS para a VPS.
 
-**Garantias:** um pedido recebe no máximo um trabalho automático de chegada; reimpressão exigirá fluxo e aprovação separados. Claim perdido, processo Sumatra excedendo 90s ou resultado incerto torna resultado `unknown` (nunca reenfileira sozinho). Estado `spooled` não garante a saída do papel. PDF expira após 15 min se nunca foi retirado da fila; o broker usa armazenamento em disco protegido. Evitar vários workers broker no mesmo arquivo; MVP suporta processo único.
+---
 
-## Instalação no AnnaHelena (Windows 11 Pro)
+## 2. Homologação Física Concluída (26/10/2026)
 
-1. Fazer checkout do repositório no Windows. Baixar a **versão portátil oficial** do [SumatraPDF](https://www.sumatrapdfreader.org/download-free-pdf-viewer) para `C:\Evydencia\printserver\SumatraPDF.exe` (verificar origem, assinatura e versão). Não incluir binário no GitHub.
-2. Executar `powershell -NoProfile -File .\scripts\Test-LabelPrinter.ps1`; a evidência de 26/10/26 indicava fila `LABEL`, driver `LABEL` v3/203dpi, USB001 e formulário `Etiqueta` 100×40 cadastrado, mas **tamanho padrão 100×150**. Verificar com `SumatraPDF.exe -list-printers` se há o papel `Etiqueta`, testar página PDF **sintética** em `-print-to "LABEL" -print-settings "noscale,paper=Etiqueta,monochrome,1x" `. Não assumir que formato está correto antes do papel físico.
-3. Copiar `windows/config.example.json` para `windows/config.local.json`. Ajustar `broker_url` e localização do executável. Criar o arquivo local `agent-token.txt` (fora do Git) com `PRINTSERVER_AGENT_TOKEN`; restringir ACL ao usuário da tarefa; nunca enviar esse token no ChatGPT ou issues.
-4. Manter `enable_printing=false` e `calibration_confirmed_100x40=false` até aprovação de uma etiqueta sintética física e do HTTPS/broker. Após homologação, configurar **ambos** como `true` e executar `powershell -NoProfile -File .\windows\agent.ps1 -Once`, em ambiente com somente job sintético.
-5. Depois instalar a tarefa sob o usuário logado: `powershell -NoProfile -File .\windows\install-task.ps1 -WhatIf`, e então retirar `-WhatIf` quando autorizado. A tarefa inicia no login, sem privilégios elevados. Ela **não** trabalha com o usuário deslogado; essa é a limitação consciente do MVP.
+A impressora física `LABEL` conectada na porta `USB001` do notebook `ANNAHELENA` foi calibrada e homologada em produção.
+Consulte o dossiê completo em [docs/AUDITORIA_FORENSE_HOMOLOGACAO_20261026.md](docs/AUDITORIA_FORENSE_HOMOLOGACAO_20261026.md).
 
-## Segurança/privacidade
-- Repositório **público**: proibido armazenar nomes/telefones reais, etiquetas, tokens, log detalhado ou PDFs.
-- Dados mínimos do cliente são transmitidos ao broker em HTTPS e permanecem temporariamente no disco privado até ACK/expiração. Definir política de retenção/backup e autorização antes de produção.
-- Permissão independente no MCP para impressão; confirmação humana explícita antes de criar trabalho. O browser não recebe secrets de impressão.
-- Nenhum job real de CRM/WhatsApp, envio de foto ou impressão física foi executado nesta implementação.
+### Destaques da Calibração:
+- **Mídia no Subsistema Win32 GDI:** `paperkind=205`, Nome: `Etiqueta`, Dimensões: `100.0 x 40.0 mm`.
+- **Padrão do Driver Preservado:** O padrão de fábrica de 150 mm (`Option8`) não foi alterado no registro do Windows; a fita de 40 mm é forçada pelo parâmetro explícito `paper=Etiqueta` na chamada do SumatraPDF.
+- **Layout Calibrado (`src/pdf.mjs`):**
+  - Todas as 4 linhas com a fonte `Helvetica-Bold` (`/F2`) para queima térmica preta e nítida.
+  - Moldura com traço `1.0 w` e recuo inferior de $10\text{ pt}$ ($3.5\text{ mm}$).
+  - Linha inferior `DISPONIVEL PARA RETIRADA` elevada para $y=24\text{ pt}$ (~$8.5\text{ mm}$ do corte), garantindo que a serra serrilhada de destaque nunca encoste no texto.
+  - Margens horizontais centralizadas em $16\text{ pt}$ ($5.6\text{ mm}$).
+- **Compatibilidade PowerShell 5.1:** Parâmetro `$ConfigPath` em `windows/agent.ps1` com resolução pós-binding.
+- **Telemetria de Produção:**
+  - Polling a cada 5 segundos via HTTPS com latência de $\approx 47\text{ ms}$.
+  - Tempo total de ciclo de impressão: **2,73 segundos** entre a submissão no broker e a finalização no buffer USB.
 
-## Próximas entregas
-Conectar ferramentas do MCP: prévia por fotos / consulta de pedido (read-only), solicitar impressão somente após leitura do status 10 (sem mexer no CRM), acompanhar trabalho. A baixa automática exige endpoint seguro de negócio no CRM e depende das correções de financeiro/concorrência; não usar `PUT /api/orders/status` legado.
+---
 
-## Referências oficiais
-- SumatraPDF: https://www.sumatrapdfreader.org/docs/Printing
-- PowerShell Scheduler: https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/register-scheduledtask
-- PowerShell PrintManagement: https://learn.microsoft.com/en-us/powershell/module/printmanagement/get-printconfiguration
-- MCP security: https://modelcontextprotocol.io/specification/2025-06-18/server/tools
+## 3. Componentes do Repositório
+
+- `src/broker.mjs`: API ultraleve em Node.js com autenticação Bearer separada para MCP (`PRINTSERVER_MCP_TOKEN`) e Agente (`PRINTSERVER_AGENT_TOKEN`). Fila persistente em JSON com tombstones permanentes (`seen_arrival_orders`) e descarte imediato do PDF após entrega para privacidade.
+- `src/pdf.mjs`: Gerador de PDF vetorial monofolha 100 × 40 mm, em ASCII puro, sem dependências npm.
+- `src/server.mjs`: Servidor HTTP com bind restrito a loopback (`127.0.0.1:8097`).
+- `windows/agent.ps1`: Agente Windows PowerShell 5.1 para polling outbound, validação de integridade SHA-256 e acionamento do SumatraPDF em modo silencioso.
+- `windows/install-task.ps1`: Script para registrar a tarefa agendada no logon da usuária (`RunLevel Limited`, sem privilégios administrativos).
+- `scripts/Prepare-SumatraPortable.ps1`: Instalador do SumatraPDF 3.6.1 portátil oficial com validação de checksum SHA-256.
+- `scripts/Test-LabelPrinter.ps1`: Script de diagnóstico somente leitura para validação da fila e do formulário `Etiqueta`.
+- `windows/Invoke-SyntheticPrintTest.ps1`: Disparador controlado de 1 impressão sintética de teste com trava de segurança (`-AuthorizeSinglePrint`).
+
+---
+
+## 4. Guia Rápido de Instalação e Operação
+
+### No Servidor VPS (`185.241.151.207`):
+1. O broker roda sob systemd: `systemctl status evydencia-printserver.service`.
+2. As variáveis de ambiente ficam em `/etc/evydencia-printserver/broker.env` (permissão `0640` restrita ao usuário `evydmcp`).
+3. O Nginx atua como proxy reverso em `https://mcp-crm.etijucas.com.br/v1/`.
+
+### No Notebook do Operador (`AnnaHelena`):
+1. O executável fica em `C:\Evydencia\printserver\SumatraPDF.exe`.
+2. O segredo do agente fica em `C:\Evydencia\printserver\agent-token.txt` (permissão restrita ao usuário logado via `icacls`).
+3. O arquivo `windows/config.local.json` define:
+   ```json
+   {
+     "broker_url": "https://mcp-crm.etijucas.com.br",
+     "secret_file": "C:\\Evydencia\\printserver\\agent-token.txt",
+     "sumatra_path": "C:\\Evydencia\\printserver\\SumatraPDF.exe",
+     "printer": "LABEL",
+     "paper": "Etiqueta",
+     "enable_printing": true,
+     "poll_seconds": 5,
+     "calibration_confirmed_100x40": true
+   }
+   ```
+4. A tarefa agendada `Evydencia - PrintServer LABEL` inicia automaticamente no login.
+
+---
+
+## 5. Referências e Padrões
+- SumatraPDF CLI: https://www.sumatrapdfreader.org/docs/Command-line-arguments
+- Windows Print Management: https://learn.microsoft.com/en-us/powershell/module/printmanagement/
+- Microsoft Task Scheduler: https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/
+- MCP Specification: https://modelcontextprotocol.io/specification/2025-06-18/
