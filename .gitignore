@@ -5,3 +5,4 @@ data/
 *.log
 local-config.json
 *.secret
+test-output/
