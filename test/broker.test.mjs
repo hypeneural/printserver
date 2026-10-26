@@ -163,6 +163,29 @@ test('failed acknowledgment commit retains lease and PDF until a confirmed ACK',
   assert.ok(!disk.includes('lease_token'));
  }finally{await a.close()}
 });
+test('expired prune is rolled back when disk cannot commit',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'evyd-prune-failure-'));
+ const file=join(dir,'state.json'),backup=file+'.bak';
+ const base=Date.now();
+ let clock=base;
+ const broker=await makeBroker({file,adminToken:ADMIN,agentToken:AGENT,now:()=>clock});
+ const server=await broker.listen(0);
+ const root='http://127.0.0.1:'+server.address().port;
+ try{
+  const created=await call(root,'/v1/jobs',data);
+  assert.equal(created.status,201);
+  clock=base+16*60*1000;
+  await rename(file,backup);await mkdir(file);
+  const rejected=await call(root,'/v1/jobs/'+created.body.job.job_id,null,'admin','GET');
+  assert.equal(rejected.status,500);
+  await rm(file,{recursive:true});
+  await rename(backup,file);
+  clock=base;
+  const stillQueued=await call(root,'/v1/jobs/'+created.body.job.job_id,null,'admin','GET');
+  assert.equal(stillQueued.status,200);
+  assert.equal(stillQueued.body.job.state,'queued','failed cleanup must preserve prior state');
+ }finally{await new Promise(done=>server.close(done));await rm(dir,{recursive:true,force:true})}
+});
 test('agent heartbeat is short-lived, read-only, and admin-token only',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'evyd-agent-health-'));
  let clock=Date.now();
