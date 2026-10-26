@@ -7,12 +7,12 @@ function clamp(s,max){return ASCII(s).trim().slice(0,max)}
 export function labelPdf({order_id,customer_name,package_name}){
  if(!Number.isSafeInteger(order_id)||order_id<1)throw Error('invalid_order_id');
  if(typeof customer_name!=='string'||customer_name.trim().length<2||customer_name.length>120)throw Error('invalid_customer_name');
- const id=clamp(order_id,12),name=clamp(customer_name,36),pkg=clamp(package_name||'Pedido de fotos',45);
+ const id=clamp(order_id,12),name=clamp(customer_name,30),pkg=clamp(package_name||'Pedido de fotos',38);
  // Physical page in PDF points: 100x40 mm.
  const stream=[
   '0.5 w 5 5 273.465 103.386 re S',
   'BT /F2 15 Tf 12 87 Td ('+esc('EVYDENCIA | PEDIDO #'+id)+') Tj ET',
-  'BT /F2 12 Tf 12 62 Td ('+esc(name)+') Tj ET',
+  'BT /F2 11 Tf 12 62 Td ('+esc(name)+') Tj ET',
   'BT /F1 9 Tf 12 43 Td ('+esc(pkg)+') Tj ET',
   'BT /F1 8 Tf 12 20 Td (DISPONIVEL PARA RETIRADA) Tj ET'
  ].join('\n')+'\n';
