@@ -113,7 +113,7 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
   try{
    if(req.method==='GET'&&req.url==='/healthz')return respond(res,200,{ok:true,service:'evydencia-printserver'});
    const u=new URL(req.url,'http://localhost');
-   const role=u.pathname.startsWith('/v1/agent/')?'agent':'admin';
+   const role=u.pathname.startsWith('/v1/agent/')&&u.pathname!=='/v1/agent/status'?'agent':'admin';
    const expected=role==='agent'?agentToken:adminToken;
    const auth=req.headers.authorization||'';
    if(!safeEqual(auth.startsWith('Bearer ')?auth.slice(7):'',expected))throw fail(401,'unauthorized');
