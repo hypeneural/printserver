@@ -15,3 +15,26 @@ jobs:
           node-version: '22'
       - run: npm run check
       - run: npm test
+  windows-powershell-syntax:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse Windows PowerShell 5.1 scripts without executing or printing
+        shell: powershell
+        run: |
+          $scripts = @('windows/agent.ps1', 'windows/install-task.ps1', 'scripts/Test-LabelPrinter.ps1')
+          foreach ($path in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path).Path, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $messages = ($errors | ForEach-Object { $_.Message }) -join '; '
+              throw "PowerShell syntax invalid ($path): $messages"
+            }
+          }
+          $config = Get-Content windows/config.example.json -Raw | ConvertFrom-Json
+          if ($config.enable_printing -ne $false -or $config.calibration_confirmed_100x40 -ne $false) {
+            throw 'Example configuration must remain fail-closed'
+          }
