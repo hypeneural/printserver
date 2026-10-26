@@ -8,6 +8,12 @@ ChatGPT → Evidência MCP (OAuth operador e leitura CRM) → PrintServer broker
 
 **Baixa do pedido não está implementada neste repositório.** O MCP só poderá gerar a impressão automática de um pedido cujo status **já está em 10** no CRM. O CRM continua sendo o único sistema que altera status e dispara WhatsApp. Nunca chamar a API legada de alteração de status diretamente.
 
+## Homologação no AnnaHelena — scripts prontos, sem impressão automática
+
+**Não dependa de um PDF sintético não versionado no clone.** Use `node scripts/Create-SyntheticLabel.mjs` (gera apenas `test-output/test_synthetic_label.pdf`, ignorado pelo Git). `scripts/Prepare-SumatraPortable.ps1` sem flag não faz download; com `-Install` baixa o ZIP 3.6.1 do domínio oficial e verifica SHA-256 antes de copiar o portátil. `windows/Invoke-SyntheticPrintTest.ps1` sem flag não imprime; com `-AuthorizeSinglePrint` submete UMA etiqueta fictícia à fila `LABEL`, sem retry. A inspeção física do papel é obrigatória.
+
+Leia [Plano de homologação revisado](docs/HOMOLOGACAO_ANTIGRAVITY_REVISADA_20261026.md) e [Prompt cirúrgico Antigravity](docs/ANTIGRAVITY_PROMPT_CIRURGICO_20261026.md). A configuração Caddy para clientes externos deve usar TLS público válido, e a homologação física é **offline**, independente de broker/MCP/CRM.
+
 ## O que este MVP já contém
 
 - `src/broker.mjs`: API pequena com autenticação Bearer separada para MCP e agente; fila persistente em arquivo JSON privado (um processo), criação idempotente **por pedido** da etiqueta de chegada, confirmação obrigatória, timeout de claim sem reenvio automático e descarte do PDF após ACK; marcador permanente de pedido mesmo após limpeza do histórico de trabalhos. Polls vazios não gravam JSON no disco.
