@@ -10,7 +10,7 @@ ChatGPT → Evidência MCP (OAuth operador e leitura CRM) → PrintServer broker
 
 ## O que este MVP já contém
 
-- `src/broker.mjs`: API pequena com autenticação Bearer separada para MCP e agente; fila persistente em arquivo JSON privado (um processo), criação idempotente **por pedido** da etiqueta de chegada, confirmação obrigatória, timeout de claim sem reenvio automático e descarte do PDF após ACK.
+- `src/broker.mjs`: API pequena com autenticação Bearer separada para MCP e agente; fila persistente em arquivo JSON privado (um processo), criação idempotente **por pedido** da etiqueta de chegada, confirmação obrigatória, timeout de claim sem reenvio automático e descarte do PDF após ACK; marcador permanente de pedido mesmo após limpeza do histórico de trabalhos. Polls vazios não gravam JSON no disco.
 - `src/pdf.mjs`: gerador PDF monofolha de 100 × 40 mm com dados mínimos do CRM, ASCII em Helvetica (a impressão inicial **não é cópia fiel da etiqueta visual do CRM**). Não contém telefone, preço ou CPF.
 - `windows/agent.ps1`: Windows PowerShell 5.1, consulta a fila com HTTPS, checksum SHA-256, impressão em `LABEL` com opção explícita `paper=Etiqueta,noscale`, retorno `spooled` (= aceito pelo executável/spooler, não prova física). Limite de uma cópia. Sem impressão enquanto `enable_printing=false`.
 - `windows/install-task.ps1`: instalação opcional de tarefa ao login do usuário atual, sem serviço novo e sem instalar Node no AnnaHelena.
@@ -37,14 +37,14 @@ API (campos exemplificados com dados sintéticos):
 - `POST /v1/agent/claim` (agente Bearer, body `{}`) → PDF em base64 + SHA + token de lease, ou `job:null`.
 - `POST /v1/agent/ack` (agente Bearer) → `{job_id,lease_token,result:"spooled"|"failed"}`.
 
-**Garantias:** um pedido recebe no máximo um trabalho automático de chegada; reimpressão exigirá fluxo e aprovação separados. Claim perdido ou timeout torna resultado `unknown` (nunca reenfileira sozinho). Estado `spooled` não garante a saída do papel. PDF expira após 15 min se nunca foi retirado da fila; o broker usa armazenamento em disco protegido. Evitar vários workers broker no mesmo arquivo; MVP suporta processo único.
+**Garantias:** um pedido recebe no máximo um trabalho automático de chegada; reimpressão exigirá fluxo e aprovação separados. Claim perdido, processo Sumatra excedendo 90s ou resultado incerto torna resultado `unknown` (nunca reenfileira sozinho). Estado `spooled` não garante a saída do papel. PDF expira após 15 min se nunca foi retirado da fila; o broker usa armazenamento em disco protegido. Evitar vários workers broker no mesmo arquivo; MVP suporta processo único.
 
 ## Instalação no AnnaHelena (Windows 11 Pro)
 
 1. Fazer checkout do repositório no Windows. Baixar a **versão portátil oficial** do [SumatraPDF](https://www.sumatrapdfreader.org/download-free-pdf-viewer) para `C:\Evydencia\printserver\SumatraPDF.exe` (verificar origem, assinatura e versão). Não incluir binário no GitHub.
 2. Executar `powershell -NoProfile -File .\scripts\Test-LabelPrinter.ps1`; a evidência de 26/10/26 indicava fila `LABEL`, driver `LABEL` v3/203dpi, USB001 e formulário `Etiqueta` 100×40 cadastrado, mas **tamanho padrão 100×150**. Verificar com `SumatraPDF.exe -list-printers` se há o papel `Etiqueta`, testar página PDF **sintética** em `-print-to "LABEL" -print-settings "noscale,paper=Etiqueta,monochrome,1x" `. Não assumir que formato está correto antes do papel físico.
 3. Copiar `windows/config.example.json` para `windows/config.local.json`. Ajustar `broker_url` e localização do executável. Criar o arquivo local `agent-token.txt` (fora do Git) com `PRINTSERVER_AGENT_TOKEN`; restringir ACL ao usuário da tarefa; nunca enviar esse token no ChatGPT ou issues.
-4. Manter `enable_printing=false` até aprovação da etiqueta de teste e do HTTPS/broker. Para ativar, configurar `enable_printing=true` e executar `powershell -NoProfile -File .\windows\agent.ps1 -Once`, em ambiente com somente job sintético.
+4. Manter `enable_printing=false` e `calibration_confirmed_100x40=false` até aprovação de uma etiqueta sintética física e do HTTPS/broker. Após homologação, configurar **ambos** como `true` e executar `powershell -NoProfile -File .\windows\agent.ps1 -Once`, em ambiente com somente job sintético.
 5. Depois instalar a tarefa sob o usuário logado: `powershell -NoProfile -File .\windows\install-task.ps1 -WhatIf`, e então retirar `-WhatIf` quando autorizado. A tarefa inicia no login, sem privilégios elevados. Ela **não** trabalha com o usuário deslogado; essa é a limitação consciente do MVP.
 
 ## Segurança/privacidade
