@@ -36,7 +36,7 @@ const validOrder=body=>(
  ))
 );
 
-export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}){
+export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),requireCrmArtwork=REQUIRE_CRM_ARTWORK}){
  if(!validSecret(adminToken)||!validSecret(agentToken)||safeEqual(adminToken,agentToken)){
   throw Error('printserver_missing_or_reused_secrets');
  }
@@ -141,7 +141,7 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
       if(req.method==='POST'&&u.pathname==='/v1/jobs'&&role==='admin'){
     const body=await readJson(req,MAX_PNG_BASE64+8192);
     if(!validOrder(body))throw fail(422,'invalid_or_unconfirmed_order');
-    if(REQUIRE_CRM_ARTWORK&&!body.label_png_base64)throw fail(422,'crm_artwork_required');
+    if(requireCrmArtwork&&!body.label_png_base64)throw fail(422,'crm_artwork_required');
     return await exclusive(async()=>{
      await persistPrune();
      const existing=jobs.find(j=>j.purpose==='arrival'&&j.order_id===body.order_id);
