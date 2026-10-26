@@ -5,8 +5,12 @@ import {createHash,randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
 import {mkdir,readFile,writeFile,rename,unlink} from 'node:fs/promises';
 import {dirname} from 'node:path';
 import {labelPdf} from './pdf.mjs';
+import {crmPngToLabelPdf} from './crm-label-pdf.mjs';
 
 const MAX_JOBS=500;
+// Opt-in: refuse outdated plain labels during Christmas rollout.
+const REQUIRE_CRM_ARTWORK=process.env.PRINTSERVER_REQUIRE_CRM_ARTWORK==='1';
+const MAX_PNG_BASE64=4*1024*1024;
 const ALLOWED_STATUS='waiting_product_retrieve';
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const fail=(status,error)=>Object.assign(new Error(error),{status});
@@ -23,7 +27,13 @@ const validOrder=body=>(
  typeof body.operator_id==='string'&&/^[0-9]{1,12}$/.test(body.operator_id)&&
  typeof body.request_id==='string'&&uuid.test(body.request_id)&&
  body.status_key===ALLOWED_STATUS&&body.confirmed_by_operator===true&&
- body.purpose==='arrival'
+ body.purpose==='arrival'&&
+ (body.label_png_base64===undefined||(
+  typeof body.label_png_base64==='string'&&body.label_png_base64.length<=MAX_PNG_BASE64&&
+  /^[A-Za-z0-9+/]+={0,2}$/.test(body.label_png_base64)&&
+  body.label_source==='crm_canonical'&&
+  typeof body.label_png_sha256==='string'&&/^[0-9a-f]{64}$/.test(body.label_png_sha256)
+ ))
 );
 
 export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}){
@@ -71,7 +81,7 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
  };
  const publicJob=j=>({
   job_id:j.job_id,request_id:j.request_id,order_id:j.order_id,
-  state:j.state,created_at:j.created_at,expires_at:j.expires_at,
+  state:j.state,render_source:j.render_source||'minimal',created_at:j.created_at,expires_at:j.expires_at,
   ...(j.completed_at?{completed_at:j.completed_at}:{}),
   ...(j.error_code?{error_code:j.error_code}:{})
  });
@@ -100,11 +110,11 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
   res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
   res.end(JSON.stringify(obj));
  };
- const readJson=async(req)=>{
+ const readJson=async(req,maxBytes=8192)=>{
   let size=0,buf='';
   for await(const c of req){
    size+=c.length;
-   if(size>8192)throw fail(413,'body_too_large');
+   if(size>maxBytes)throw fail(413,'body_too_large');
    buf+=c.toString('utf8');
   }
   try{return JSON.parse(buf||'{}')}catch{throw fail(400,'invalid_json')}
@@ -129,8 +139,9 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
     });
    }
       if(req.method==='POST'&&u.pathname==='/v1/jobs'&&role==='admin'){
-    const body=await readJson(req);
+    const body=await readJson(req,MAX_PNG_BASE64+8192);
     if(!validOrder(body))throw fail(422,'invalid_or_unconfirmed_order');
+    if(REQUIRE_CRM_ARTWORK&&!body.label_png_base64)throw fail(422,'crm_artwork_required');
     return await exclusive(async()=>{
      await persistPrune();
      const existing=jobs.find(j=>j.purpose==='arrival'&&j.order_id===body.order_id);
@@ -140,11 +151,17 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
      }
      if(seenArrivalOrders.has(body.order_id))return respond(res,409,{error:'manual_reconciliation_required',job:null});
      if(jobs.length>=MAX_JOBS)throw fail(503,'queue_full');
-     const pdf=labelPdf(body);
+     let pdf,renderSource='minimal';
+     if(body.label_png_base64){
+      const png=Buffer.from(body.label_png_base64,'base64');
+      if(png.toString('base64')!==body.label_png_base64||hash(png)!==body.label_png_sha256)throw fail(422,'invalid_crm_png_hash');
+      try{pdf=crmPngToLabelPdf(png)}catch{throw fail(422,'invalid_crm_label_png')}
+      renderSource='crm_canonical';
+     }else pdf=labelPdf(body);
      const ts=now();
      const job={
       job_id:randomUUID(),request_id:body.request_id,order_id:body.order_id,
-      operator_id:body.operator_id,purpose:'arrival',created_at:ts,
+      operator_id:body.operator_id,purpose:'arrival',render_source:renderSource,created_at:ts,
       expires_at:ts+15*60*1000,state:'queued',
       pdf_base64:pdf.toString('base64'),sha256:hash(pdf)
      };
