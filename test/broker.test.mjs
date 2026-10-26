@@ -163,6 +163,32 @@ test('failed acknowledgment commit retains lease and PDF until a confirmed ACK',
   assert.ok(!disk.includes('lease_token'));
  }finally{await a.close()}
 });
+test('agent heartbeat is short-lived, read-only, and admin-token only',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'evyd-agent-health-'));
+ let clock=Date.now();
+ const broker=await makeBroker({file:join(dir,'state.json'),adminToken:ADMIN,agentToken:AGENT,now:()=>clock});
+ const server=await broker.listen(0);
+ const root='http://127.0.0.1:'+server.address().port;
+ try{
+  const before=await call(root,'/v1/agent/status',null,'admin','GET');
+  assert.equal(before.status,200);
+  assert.equal(before.body.agent_online,false);
+  assert.equal(before.body.agent_poll_age_seconds,null);
+  assert.equal((await call(root,'/v1/agent/status',null,'agent','GET')).status,401);
+  const claimed=await call(root,'/v1/agent/claim',{},'agent');
+  assert.equal(claimed.status,200);
+  assert.equal(claimed.body.job,null);
+  const online=await call(root,'/v1/agent/status',null,'admin','GET');
+  assert.equal(online.body.agent_online,true);
+  assert.equal(online.body.agent_poll_age_seconds,0);
+  clock+=31000;
+  const offline=await call(root,'/v1/agent/status',null,'admin','GET');
+  assert.equal(offline.body.agent_online,false);
+  assert.equal(offline.body.agent_poll_age_seconds,31);
+  assert.equal((await readFile(join(dir,'state.json'),'utf8').catch(()=>'')),'' ,
+   'empty queue heartbeat must not persist sensitive state');
+ }finally{await new Promise(done=>server.close(done));await rm(dir,{recursive:true,force:true})}
+});
 test('very long uppercase text is bounded within calibrated printable width',()=>{
  const pdf=labelPdf({...data,customer_name:'W'.repeat(120),package_name:'W'.repeat(120)}).toString('latin1');
  assert.match(pdf,/\(W{22}\) Tj/);
