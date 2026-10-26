@@ -9,13 +9,17 @@
 [CmdletBinding()]
 param(
     [switch]$AuthorizeSinglePrint,
-    [string]$PdfPath=(Join-Path (Split-Path $PSScriptRoot -Parent) 'test-output\test_synthetic_label.pdf'),
+    [string]$PdfPath,
     [string]$SumatraPath='C:\Evydencia\printserver\SumatraPDF.exe'
 )
 $ErrorActionPreference='Stop'
 if(!$AuthorizeSinglePrint){
     Write-Output 'NOT_EXECUTED: requer -AuthorizeSinglePrint para autorizar uma impressão física sintética.'
     return
+}
+# PSScriptRoot is reliable after parameter binding on Windows PowerShell 5.1.
+if([string]::IsNullOrWhiteSpace($PdfPath)){
+    $PdfPath=Join-Path (Split-Path -Path $PSScriptRoot -Parent) 'test-output\test_synthetic_label.pdf'
 }
 if(!(Test-Path -LiteralPath $SumatraPath -PathType Leaf)){throw 'SumatraPDF não instalado/validado.'}
 if(!(Test-Path -LiteralPath $PdfPath -PathType Leaf)){throw 'Fixture ausente. Execute node scripts/Create-SyntheticLabel.mjs.'}
