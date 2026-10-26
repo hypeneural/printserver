@@ -63,6 +63,36 @@ test('queue is durable after restarting broker and never automatically reprints'
   }finally{await new Promise(resolve=>s.close(resolve))}
  }finally{await a.close()}
 });
+test('dedup tombstone survives metadata pruning and process restart',async()=>{
+ const a=await setup();
+ try{
+  const created=await call(a.root,'/v1/jobs',data);
+  assert.equal(created.status,201);
+  const future=Date.now()+8*864e5;
+  const b=await makeBroker({file:join(a.dir,'state.json'),adminToken:ADMIN,agentToken:AGENT,now:()=>future});
+  const srv=await b.listen(0);
+  try{
+   const root='http://127.0.0.1:'+srv.address().port;
+   const old=await call(root,'/v1/jobs/'+created.body.job.job_id,null,'admin','GET');
+   assert.equal(old.status,404);
+   const retry=await call(root,'/v1/jobs',{...data,request_id:'70bca7a8-cdb7-4b8c-a2a8-68ebae46889e'});
+   assert.equal(retry.status,409);
+   const onDisk=JSON.parse(await readFile(join(a.dir,'state.json'),'utf8'));
+   assert.ok(onDisk.seen_arrival_orders.includes(data.order_id));
+   assert.ok(!onDisk.jobs.some(j=>j.order_id===data.order_id));
+  }finally{await new Promise(resolve=>srv.close(resolve))}
+ }finally{await a.close()}
+});
+test('uncertain ACK is final and not retried',async()=>{
+ const a=await setup();
+ try{
+  await call(a.root,'/v1/jobs',data);
+  const claim=await call(a.root,'/v1/agent/claim',{},'agent');
+  const ack=await call(a.root,'/v1/agent/ack',{job_id:claim.body.job.job_id,lease_token:claim.body.job.lease_token,result:'unknown'},'agent');
+  assert.equal(ack.body.job.state,'unknown');
+  assert.equal((await call(a.root,'/v1/agent/claim',{},'agent')).body.job,null);
+  assert.equal((await call(a.root,'/v1/jobs',data)).status,409);
+});
 test('no secrets means fail closed',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'evyd-printserver-'));
  try{
