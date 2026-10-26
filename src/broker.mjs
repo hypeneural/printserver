@@ -56,6 +56,18 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
    await unlink(tmp).catch(e=>{if(e.code!=='ENOENT')throw e});
   }
  };
+ // Snapshot one job, not the entire queue, to keep the 5-second agent poll cheap.
+ const persistJobMutation=async(job,mutate)=>{
+  const before={...job};
+  mutate();
+  try{await save()}
+  catch(e){
+   // Never expose an ACK or claim that was not committed to disk.
+   for(const key of Object.keys(job))delete job[key];
+   Object.assign(job,before);
+   throw e;
+  }
+ };
  const publicJob=j=>({
   job_id:j.job_id,request_id:j.request_id,order_id:j.order_id,
   state:j.state,created_at:j.created_at,expires_at:j.expires_at,
@@ -147,8 +159,11 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
      const changed=prune();
      const job=jobs.find(x=>x.state==='queued');
      if(!job){if(changed)await save();return respond(res,200,{job:null})}
-     job.state='claimed';job.lease_token=randomBytes(32).toString('hex');job.lease_expires_at=now()+120000;
-     await save();
+     await persistJobMutation(job,()=>{
+      job.state='claimed';
+      job.lease_token=randomBytes(32).toString('hex');
+      job.lease_expires_at=now()+120000;
+     });
      return respond(res,200,{job:{
       job_id:job.job_id,lease_token:job.lease_token,
       pdf_base64:job.pdf_base64,sha256:job.sha256,expires_at:job.expires_at
@@ -161,10 +176,14 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
     return await exclusive(async()=>{
      const job=jobs.find(x=>x.job_id===body.job_id);
      if(!job||job.state!=='claimed'||!safeEqual(body.lease_token,job.lease_token))throw fail(409,'lease_invalid_or_unknown');
-     job.state=body.result;job.completed_at=now();
-     if(job.state==='failed')job.error_code='local_print_failed';
-     if(job.state==='unknown')job.error_code='print_result_uncertain';
-     delete job.pdf_base64;delete job.lease_token;await save();
+     await persistJobMutation(job,()=>{
+      job.state=body.result;
+      job.completed_at=now();
+      if(job.state==='failed')job.error_code='local_print_failed';
+      if(job.state==='unknown')job.error_code='print_result_uncertain';
+      delete job.pdf_base64;
+      delete job.lease_token;
+     });
      return respond(res,200,{job:publicJob(job)});
     });
    }
