@@ -58,10 +58,14 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
   const ts=now();
   for(const j of jobs){
    if(j.state==='queued'&&j.expires_at<=ts){j.state='expired';delete j.pdf_base64}
-   if(j.state==='claimed'&&j.lease_expires_at<=ts){j.state='unknown';delete j.pdf_base64}
+   if(j.state==='claimed'&&j.lease_expires_at<=ts){j.state='unknown';delete j.pdf_base64;delete j.lease_token}
   }
-  if(jobs.length>MAX_JOBS)jobs=jobs.filter(j=>j.state==='queued'||j.state==='claimed'||j.created_at>=ts-7*864e5).slice(-MAX_JOBS);
+  // Purge resolved metadata after 7 days even when the queue stays below MAX_JOBS.
+  jobs=jobs.filter(j=>j.state==='queued'||j.state==='claimed'||j.created_at>=ts-7*864e5);
  };
+ // Remove expired PDF payloads even when the notebook is offline and no HTTP traffic occurs.
+ const sweeper=setInterval(()=>{void exclusive(async()=>{prune();await save()}).catch(()=>{})},60000);
+ sweeper.unref();
  const respond=(res,status,obj)=>{
   res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
   res.end(JSON.stringify(obj));
