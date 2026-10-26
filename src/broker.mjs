@@ -31,11 +31,14 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
   throw Error('printserver_missing_or_reused_secrets');
  }
  await mkdir(dirname(file),{recursive:true,mode:0o700});
- let jobs;
+ let jobs,seenArrivalOrders=new Set();
  try{
   const obj=JSON.parse(await readFile(file,'utf8'));
   if(!Array.isArray(obj.jobs))throw Error('invalid_jobs');
   jobs=obj.jobs;
+  if(obj.seen_arrival_orders!==undefined&&(!Array.isArray(obj.seen_arrival_orders)||obj.seen_arrival_orders.some(id=>!Number.isSafeInteger(id)||id<1)))throw Error('invalid_seen_arrival_orders');
+  seenArrivalOrders=new Set(obj.seen_arrival_orders||[]);
+  for(const job of jobs)if(job.purpose==='arrival'&&Number.isSafeInteger(job.order_id))seenArrivalOrders.add(job.order_id);
  }catch(e){if(e.code==='ENOENT')jobs=[];else throw e}
  let serial=Promise.resolve();
  const exclusive=fn=>{
@@ -45,7 +48,7 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
  };
  const save=async()=>{
   const tmp=file+'.'+process.pid+'.'+randomBytes(4).toString('hex')+'.tmp';
-  await writeFile(tmp,JSON.stringify({version:1,jobs}),{mode:0o600,flag:'wx'});
+  await writeFile(tmp,JSON.stringify({version:2,jobs,seen_arrival_orders:[...seenArrivalOrders]}),{mode:0o600,flag:'wx'});
   await rename(tmp,file);
  };
  const publicJob=j=>({
@@ -56,15 +59,18 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
  });
  const prune=()=>{
   const ts=now();
+  let changed=false;
   for(const j of jobs){
-   if(j.state==='queued'&&j.expires_at<=ts){j.state='expired';delete j.pdf_base64}
-   if(j.state==='claimed'&&j.lease_expires_at<=ts){j.state='unknown';delete j.pdf_base64;delete j.lease_token}
+   if(j.state==='queued'&&j.expires_at<=ts){j.state='expired';delete j.pdf_base64;changed=true}
+   if(j.state==='claimed'&&j.lease_expires_at<=ts){j.state='unknown';delete j.pdf_base64;delete j.lease_token;changed=true}
   }
-  // Purge resolved metadata after 7 days even when the queue stays below MAX_JOBS.
+  // Retain tiny per-order tombstones indefinitely; purge large job payload metadata after 7 days.
+  const before=jobs.length;
   jobs=jobs.filter(j=>j.state==='queued'||j.state==='claimed'||j.created_at>=ts-7*864e5);
+  return changed||jobs.length!==before;
  };
- // Remove expired PDF payloads even when the notebook is offline and no HTTP traffic occurs.
- const sweeper=setInterval(()=>{void exclusive(async()=>{prune();await save()}).catch(()=>{})},60000);
+ // Idle poll/GET never writes to disk unless state has actually changed.
+ const sweeper=setInterval(()=>{void exclusive(async()=>{if(prune())await save()}).catch(()=>{})},60000);
  sweeper.unref();
  const respond=(res,status,obj)=>{
   res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
@@ -91,12 +97,13 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
     const body=await readJson(req);
     if(!validOrder(body))throw fail(422,'invalid_or_unconfirmed_order');
     return await exclusive(async()=>{
-     prune();
+     if(prune())await save();
      const existing=jobs.find(j=>j.purpose==='arrival'&&j.order_id===body.order_id);
      if(existing){
       if(existing.state==='expired'||existing.state==='failed'||existing.state==='unknown')return respond(res,409,{error:'manual_reconciliation_required',job:publicJob(existing)});
       return respond(res,200,{replay:true,job:publicJob(existing)});
      }
+     if(seenArrivalOrders.has(body.order_id))return respond(res,409,{error:'manual_reconciliation_required',job:null});
      if(jobs.length>=MAX_JOBS)throw fail(503,'queue_full');
      const pdf=labelPdf(body);
      const ts=now();
@@ -106,7 +113,9 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
       expires_at:ts+15*60*1000,state:'queued',
       pdf_base64:pdf.toString('base64'),sha256:hash(pdf)
      };
-     jobs.push(job);await save();
+     jobs.push(job);
+     seenArrivalOrders.add(body.order_id);
+     await save();
      return respond(res,201,{replay:false,job:publicJob(job)});
     });
    }
@@ -114,7 +123,7 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
     const id=decodeURIComponent(u.pathname.slice('/v1/jobs/'.length));
     if(!uuid.test(id))throw fail(400,'invalid_job_id');
     return await exclusive(async()=>{
-     prune();await save();
+     if(prune())await save();
      const job=jobs.find(x=>x.job_id===id);
      return job?respond(res,200,{job:publicJob(job)}):respond(res,404,{error:'not_found'});
     });
@@ -123,9 +132,9 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
     // No request arguments: agents cannot choose arbitrary data to print.
     await readJson(req);
     return await exclusive(async()=>{
-     prune();
+     const changed=prune();
      const job=jobs.find(x=>x.state==='queued');
-     if(!job){await save();return respond(res,200,{job:null})}
+     if(!job){if(changed)await save();return respond(res,200,{job:null})}
      job.state='claimed';job.lease_token=randomBytes(32).toString('hex');job.lease_expires_at=now()+120000;
      await save();
      return respond(res,200,{job:{
@@ -136,12 +145,13 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now()}
    }
    if(req.method==='POST'&&u.pathname==='/v1/agent/ack'){
     const body=await readJson(req);
-    if(!uuid.test(body.job_id||'')||!['spooled','failed'].includes(body.result)||typeof body.lease_token!=='string')throw fail(422,'invalid_ack');
+    if(!uuid.test(body.job_id||'')||!['spooled','failed','unknown'].includes(body.result)||typeof body.lease_token!=='string')throw fail(422,'invalid_ack');
     return await exclusive(async()=>{
      const job=jobs.find(x=>x.job_id===body.job_id);
      if(!job||job.state!=='claimed'||!safeEqual(body.lease_token,job.lease_token))throw fail(409,'lease_invalid_or_unknown');
      job.state=body.result;job.completed_at=now();
      if(job.state==='failed')job.error_code='local_print_failed';
+     if(job.state==='unknown')job.error_code='print_result_uncertain';
      delete job.pdf_base64;delete job.lease_token;await save();
      return respond(res,200,{job:publicJob(job)});
     });
