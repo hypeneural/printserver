@@ -13,15 +13,23 @@ $n=New-Object System.Xml.XmlNamespaceManager($caps.NameTable)
 $n.AddNamespace('psf','http://schemas.microsoft.com/windows/2003/08/printing/printschemaframework')
 $n.AddNamespace('psk','http://schemas.microsoft.com/windows/2003/08/printing/printschemakeywords')
 $matching=$false
+$activeWidth=$null
+$activeHeight=$null
+$active=$ticket.SelectSingleNode("//psf:Feature[@name='psk:PageMediaSize']/psf:Option",$n)
+$activeName=if($active){$active.GetAttribute('name')}else{$null}
 foreach($option in $caps.SelectNodes("//psf:Feature[@name='psk:PageMediaSize']/psf:Option",$n)){
  $display=$option.SelectSingleNode("./psf:Property[@name='psk:DisplayName']/psf:Value",$n)
  $w=$option.SelectSingleNode("./psf:ScoredProperty[@name='psk:MediaSizeWidth']/psf:Value",$n)
  $h=$option.SelectSingleNode("./psf:ScoredProperty[@name='psk:MediaSizeHeight']/psf:Value",$n)
+ if($w -and $h -and $activeName -eq $option.GetAttribute('name')){
+    $activeWidth=[math]::Round(([double]$w.InnerText / 1000),2)
+    $activeHeight=[math]::Round(([double]$h.InnerText / 1000),2)
+ }
  if($display -and $display.InnerText -eq 'Etiqueta' -and $w -and $h -and
     [math]::Abs([double]$w.InnerText-100000) -lt 1100 -and
     [math]::Abs([double]$h.InnerText-40000) -lt 1100){$matching=$true}
 }
-$active=$ticket.SelectSingleNode("//psf:Feature[@name='psk:PageMediaSize']/psf:Option",$n)
+$activeMatches=($null -ne $activeWidth -and $null -ne $activeHeight -and [math]::Abs($activeWidth-100) -le 1 -and [math]::Abs($activeHeight-40) -le 1)
 [pscustomobject]@{
  computer=$env:COMPUTERNAME
  printer=$p.Name
@@ -31,7 +39,11 @@ $active=$ticket.SelectSingleNode("//psf:Feature[@name='psk:PageMediaSize']/psf:O
  port=$p.PortName
  port_description=$port.Description
  spooler=(Get-Service Spooler).Status.ToString()
- active_paper_option=if($active){$active.GetAttribute('name')}else{$null}
+ active_paper_option=$activeName
+ active_paper_width_mm=$activeWidth
+ active_paper_height_mm=$activeHeight
+ active_paper_matches_100x40=$activeMatches
+ manual_calibration_required=(!$activeMatches)
  has_100x40_form=$matching
  pending_jobs=@(Get-PrintJob -PrinterName $PrinterName -ErrorAction Stop).Count
  physical_print_verified=$false
