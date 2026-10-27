@@ -82,22 +82,45 @@ do {
             $answer=ApiPost '/v1/agent/claim' @{}
             if($null -ne $answer.job){
                 $j=$answer.job
-                if([string]$j.job_id -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$'){
-                    throw 'ID do trabalho inválido.'
+                if([string]$j.job_id -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' -or
+                   [string]$j.lease_token -notmatch '^[0-9a-f]{64}$'){
+                    # Corrupt claim cannot be ACKed safely; never attempt an arbitrary printer job.
+                    throw 'Identificador do job ou lease invalido.'
                 }
-                $bytes=[Convert]::FromBase64String([string]$j.pdf_base64)
-                if($bytes.Length -gt 262144 -or $bytes.Length -lt 15){throw 'PDF com tamanho inválido.'}
-                $sha=[BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash($bytes)).Replace('-','').ToLowerInvariant()
-                if($sha -cne [string]$j.sha256){throw 'Checksum da etiqueta inválido.'}
+                $result='failed' # Failure before launching Sumatra means nothing was printed.
                 $filename=Join-Path $workDir ([string]$j.job_id+'.pdf')
-                $result='unknown'
                 try {
+                    $bytes=[Convert]::FromBase64String([string]$j.pdf_base64)
+                    # Canonical Natal artwork embeds the complete 1181x472 CRM PNG.
+                    # Old 256 KiB cap incorrectly rejected valid PDF labels.
+                    if($bytes.Length -lt 200 -or $bytes.Length -gt 5242880){
+                        throw 'PDF fora do limite de 5 MiB.'
+                    }
+                    $shaAlgorithm=[Security.Cryptography.SHA256]::Create()
+                    try {
+                        $sha=[BitConverter]::ToString($shaAlgorithm.ComputeHash($bytes)).Replace('-','').ToLowerInvariant()
+                    }finally{
+                        $shaAlgorithm.Dispose()
+                    }
+                    if($sha -cne [string]$j.sha256){throw 'Checksum da etiqueta invalido.'}
+                    # Header check is intentionally lightweight: broker already validates
+                    # one-page 100x40 and the agent never executes the PDF.
+                    if([Text.Encoding]::ASCII.GetString($bytes,0,5) -cne '%PDF-'){
+                        throw 'Assinatura PDF invalida.'
+                    }
                     [IO.File]::WriteAllBytes($filename,$bytes)
                     $result=PrintPdf $filename
+                }catch{
+                    # If the external print process has been launched but failed or timed out,
+                    # PrintPdf returns unknown/failed instead of throwing. Never auto-retry.
+                    $result='failed'
+                    Write-Warning ('agent_job_validation_error_type='+$_.Exception.GetType().Name)
                 }finally{
                     Remove-Item -LiteralPath $filename -Force -ErrorAction SilentlyContinue
                 }
-                # 'spooled' = hand-off to process, NOT the printed physical label.
+                # Always ACK a well-formed claimed job, even when its payload is invalid,
+                # so it does not stay claimed until lease expiry. ACK errors stay unknown:
+                # NEVER submit the same job again without reconciliation.
                 ApiPost '/v1/agent/ack' @{
                     job_id=[string]$j.job_id
                     lease_token=[string]$j.lease_token
