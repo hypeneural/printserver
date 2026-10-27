@@ -77,6 +77,72 @@ test('strict broker refuses plain fallback and prints only canonical verified PN
   assert.equal(duplicate.code,200);assert.equal(duplicate.data.replay,true);
  }finally{await h.close()}
 });
+
+test('realistic 1181x472 Christmas artwork can exceed old Windows 256KiB PDF limit',async()=>{
+ const {randomBytes}=await import('node:crypto');
+ const width=1181,height=472,rows=[],widthBytes=width*3;
+ for(let y=0;y<height;y++){
+  const row=Buffer.alloc(1+widthBytes);
+  randomBytes(widthBytes).copy(row,1);
+  rows.push(row);
+ }
+ const hdr=Buffer.alloc(13);hdr.writeUInt32BE(width,0);hdr.writeUInt32BE(height,4);hdr[8]=8;hdr[9]=2;
+ const image=Buffer.concat([Buffer.from('89504e470d0a1a0a','hex'),
+  chunk('IHDR',hdr),chunk('IDAT',deflateSync(Buffer.concat(rows))),chunk('IEND',Buffer.alloc(0))]);
+ const pdf=crmPngToLabelPdf(image);
+ assert.ok(pdf.length>262144,'must exercise the old agent rejection');
+ assert.ok(pdf.length<5242880,'must fit the new bounded Windows limit');
+ const h=await harness();
+ try{
+  const request={...body,label_source:'crm_canonical',label_png_base64:image.toString('base64'),
+   label_png_sha256:createHash('sha256').update(image).digest('hex')};
+  const job=await call(h.root,'/v1/jobs',request);
+  assert.equal(job.code,201);
+  const claimed=await call(h.root,'/v1/agent/claim',{},AGENT);
+  assert.equal(claimed.code,200);
+  const bytes=Buffer.from(claimed.data.job.pdf_base64,'base64');
+  assert.equal(createHash('sha256').update(bytes).digest('hex'),claimed.data.job.sha256);
+  assert.ok(bytes.length>262144 && bytes.length<5242880);
+  const ack=await call(h.root,'/v1/agent/ack',{job_id:job.data.job.job_id,
+   lease_token:claimed.data.job.lease_token,result:'spooled'},AGENT);
+  assert.equal(ack.code,200);
+  assert.equal(ack.data.job.state,'spooled');
+ }finally{await h.close()}
+});
+
+test('a legacy minimal job is never replayed as a canonical artwork job in strict mode',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'crm-label-legacy-'));
+ const file=join(dir,'jobs.json');
+ const legacy=await makeBroker({file,adminToken:ADMIN,agentToken:AGENT,requireCrmArtwork:false});
+ const s1=await legacy.listen(0);
+ try{
+  const submitted=await call('http://127.0.0.1:'+s1.address().port,'/v1/jobs',body);
+  assert.equal(submitted.code,201);
+  assert.equal(submitted.data.job.render_source,'minimal');
+ }finally{await new Promise(resolve=>s1.close(resolve))}
+ const strict=await makeBroker({file,adminToken:ADMIN,agentToken:AGENT,requireCrmArtwork:true});
+ const s2=await strict.listen(0);
+ try{
+  const art=png(),attempt={...body,label_source:'crm_canonical',label_png_base64:art.toString('base64'),
+   label_png_sha256:createHash('sha256').update(art).digest('hex')};
+  const replay=await call('http://127.0.0.1:'+s2.address().port,'/v1/jobs',attempt);
+  assert.equal(replay.code,409);
+  assert.equal(replay.data.error,'manual_reconciliation_required');
+  assert.equal(replay.data.job.render_source,'minimal');
+ }finally{
+  await new Promise(resolve=>s2.close(resolve));
+  await rm(dir,{recursive:true,force:true})
+ }
+});
+
+test('PowerShell 5.1 agent has bounded PDF limit, ACK on validation failure and no automatic retry',async()=>{
+ const {readFileSync}=await import('node:fs');
+ const script=readFileSync(new URL('../windows/agent.ps1',import.meta.url),'utf8');
+ assert.match(script,/\$bytes\.Length -gt 5242880/);
+ assert.match(script,/ApiPost '\/v1\/agent\/ack'/);
+ assert.match(script,/result=\$result/);
+ assert.match(script,/never auto-retry/i);
+});
 test('corrupt or mismatched artwork never generates a print job',async()=>{
  const h=await harness();
  try{
