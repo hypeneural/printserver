@@ -143,6 +143,26 @@ test('PowerShell 5.1 agent has bounded PDF limit, ACK on validation failure and 
  assert.match(script,/result=\$result/);
  assert.match(script,/never auto-retry/i);
 });
+
+test('bounded raster queue rejects over-capacity work before persisting a job/tombstone',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'crm-label-capacity-'));
+ const broker=await makeBroker({file:join(dir,'jobs.json'),adminToken:ADMIN,agentToken:AGENT,
+  requireCrmArtwork:true,maxPendingPdfBase64:64});
+ const server=await broker.listen(0);
+ const host='http://127.0.0.1:'+server.address().port;
+ try{
+  const art=png(),good={...body,label_source:'crm_canonical',label_png_base64:art.toString('base64'),
+   label_png_sha256:createHash('sha256').update(art).digest('hex')};
+  const rejected=await call(host,'/v1/jobs',good);
+  assert.equal(rejected.code,503);
+  assert.equal(rejected.data.error,'queue_capacity_exceeded');
+  const claimed=await call(host,'/v1/agent/claim',{},AGENT);
+  assert.equal(claimed.data.job,null);
+ }finally{
+  await new Promise(resolve=>server.close(resolve));
+  await rm(dir,{recursive:true,force:true})
+ }
+});
 test('corrupt or mismatched artwork never generates a print job',async()=>{
  const h=await harness();
  try{
