@@ -146,6 +146,11 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),
      await persistPrune();
      const existing=jobs.find(j=>j.purpose==='arrival'&&j.order_id===body.order_id);
      if(existing){
+      // A previously spooled MINIMAL label must never be reported as a successful
+      // replay of the canonical Christmas artwork during the strict rollout.
+      // The tombstone still wins: never enqueue a second physical label here.
+      if(requireCrmArtwork&&existing.render_source!=='crm_canonical')
+       return respond(res,409,{error:'manual_reconciliation_required',job:publicJob(existing)});
       if(existing.state==='expired'||existing.state==='failed'||existing.state==='unknown')return respond(res,409,{error:'manual_reconciliation_required',job:publicJob(existing)});
       return respond(res,200,{replay:true,job:publicJob(existing)});
      }
