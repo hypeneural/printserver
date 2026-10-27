@@ -47,6 +47,14 @@ Consulte o dossiê completo em [docs/AUDITORIA_FORENSE_HOMOLOGACAO_20261026.md](
 
 ---
 
+## Etiqueta natalina canônica (PNG + QR do CRM) — extensão opt-in
+O CRM Laravel já produz a etiqueta real com fundo, imagens, nome abreviado, pacote, data, WhatsApp e QR dinâmico via `OrderLabelService`. O PrintServer agora aceita **o PNG final do CRM**, verifica SHA/CRC/dimensões e o embute num PDF de **100×40 mm** sem recriar fonte, arte ou QR Code.
+
+- Habilitação coordenada depois do teste físico: `EVYD_CRM_LABEL_RENDER_ENABLED=1` no gateway e `PRINTSERVER_REQUIRE_CRM_ARTWORK=1` no broker. Na segunda flag, o broker recusa etiquetas simples legadas em vez de imprimi-las.
+- Fixture fictícia: `php scripts/crm-label-synthetic-fixture.php` no checkout MCP, com o CRM local completo; `node scripts/wrap-crm-label-fixture.mjs` no PrintServer. `windows/Invoke-CrmArtworkPrintTest.ps1` não imprime sem `-AuthorizeSinglePrint`.
+- [Auditoria da origem dos dados e QR no CRM](https://github.com/hypeneural/evydencia-crm-mcp/blob/feat/printserver-bridge-20261026/docs/AUDITORIA_ETIQUETA_NATAL_CANONICA_20261026.md) e [prompt cirúrgico de homologação](docs/PROMPT_ANTIGRAVITY_ETIQUETA_NATAL_CANONICA_20261026.md).
+- **Não** altera o CRM Laravel, faz baixa no pedido ou dispara WhatsApp. O novo template ainda não está liberado em produção até a homologação física.
+
 ## 3. Componentes do Repositório
 
 - `src/broker.mjs`: API ultraleve em Node.js com autenticação Bearer separada para MCP (`PRINTSERVER_MCP_TOKEN`) e Agente (`PRINTSERVER_AGENT_TOKEN`). Fila persistente em JSON com tombstones permanentes (`seen_arrival_orders`) e descarte imediato do PDF após entrega para privacidade.
