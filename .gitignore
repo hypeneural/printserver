@@ -1,0 +1,10 @@
+node_modules/
+.env
+data/
+*.pdf
+*.log
+local-config.json
+config.local.json
+*.local.json
+*.secret
+test-output/

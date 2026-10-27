@@ -1,0 +1,10 @@
+{
+  "broker_url": "https://printserver.example.com",
+  "secret_file": "C:\\Evydencia\\printserver\\agent-token.txt",
+  "sumatra_path": "C:\\Evydencia\\printserver\\SumatraPDF.exe",
+  "printer": "LABEL",
+  "paper": "Etiqueta",
+  "enable_printing": false,
+  "poll_seconds": 5,
+  "calibration_confirmed_100x40": false
+}
