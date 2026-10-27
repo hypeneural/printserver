@@ -39,9 +39,16 @@ if(!$start.StartsWith('%PDF-1.4') -or !$start.Contains('/MediaBox [0 0 283.46457
   throw 'PDF nao contem pagina e raster do CRM em 100x40.'
 }
 $printer=Get-Printer -Name 'LABEL' -ErrorAction Stop
-if($printer.PrinterStatus -ne 'Normal' -or $printer.DriverName -cne 'LABEL' -or
-   (Get-Service Spooler).Status -ne 'Running'){
-  throw 'Fila LABEL ou spooler nao esta pronta.'
+# LABEL is the QUEUE name; the actual OEM driver may be LABEL-9X20.
+# Compare the verified USB port and paper capability, never confuse driver name
+# with printer name. A changed port requires operator reconfirmation.
+if($printer.Name -cne 'LABEL' -or $printer.PortName -cne 'USB001' -or
+   $printer.PrinterStatus -ne 'Normal' -or (Get-Service Spooler).Status -ne 'Running'){
+  throw 'Fila LABEL, USB001 ou spooler nao esta pronta.'
+}
+$printCfg=Get-PrintConfiguration -PrinterName 'LABEL' -ErrorAction Stop
+if(!([string]$printCfg.PrintCapabilitiesXML).Contains('Etiqueta')){
+  throw 'Driver nao anuncia a midia Etiqueta; validar formulario 100x40.'
 }
 if($SumatraPath.Contains('"') -or $pdfPath.Contains('"')){throw 'Caminho inseguro.'}
 $settings='noscale,paper=Etiqueta,monochrome,1x,disable-auto-rotation,ignore-pdf-print-settings'
