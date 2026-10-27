@@ -14,6 +14,8 @@ jobs:
         with:
           node-version: '22'
       - run: npm run check
+      - name: Verify isolated local broker/label pipeline
+        run: npm run agent:validate:local
       - run: npm test
       - run: npm run test:fixture
   windows-powershell-syntax:
@@ -25,7 +27,7 @@ jobs:
       - name: Parse Windows PowerShell 5.1 scripts without executing or printing
         shell: powershell
         run: |
-          $scripts = @('windows/agent.ps1', 'windows/install-task.ps1', 'scripts/Test-LabelPrinter.ps1', 'scripts/Prepare-SumatraPortable.ps1', 'windows/Invoke-SyntheticPrintTest.ps1', 'windows/Invoke-CrmArtworkPrintTest.ps1')
+          $scripts = @('windows/agent.ps1', 'windows/install-task.ps1', 'scripts/Test-LabelPrinter.ps1', 'scripts/Prepare-SumatraPortable.ps1', 'windows/Invoke-SyntheticPrintTest.ps1', 'windows/Invoke-CrmArtworkPrintTest.ps1', 'scripts/Validate-SyntaxOnly.ps1')
           foreach ($path in $scripts) {
             $tokens = $null
             $errors = $null
@@ -34,6 +36,10 @@ jobs:
               $messages = ($errors | ForEach-Object { $_.Message }) -join '; '
               throw "PowerShell syntax invalid ($path): $messages"
             }
+          }
+          $syntaxReceipt = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/Validate-SyntaxOnly.ps1 | ConvertFrom-Json
+          if ($syntaxReceipt.syntax_ok -ne $true -or $syntaxReceipt.printer_accessed -ne $false -or $syntaxReceipt.writes_performed -ne $false) {
+            throw 'Offline parser-only validator performed unsafe action or found errors'
           }
           $config = Get-Content windows/config.example.json -Raw | ConvertFrom-Json
           if ($config.enable_printing -ne $false -or $config.calibration_confirmed_100x40 -ne $false) {
