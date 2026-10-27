@@ -1,3 +1,5 @@
+> **PROTOCOLO DE AGENTE LOCAL LIMITADO — 27/10/2026.** Para o agente de validação local, a ÚNICA entrada autorizada é [docs/VALIDACAO_LOCAL_AGENTE_20261027.md](docs/VALIDACAO_LOCAL_AGENTE_20261027.md), seguida de `npm run agent:validate:local`. Trabalhar somente nos arquivos deste checkout e em testes sintéticos. Não explorar outros diretórios de projetos, não acessar rede/SSH/serviços remotos, não usar credenciais, não alterar Windows spooler/driver/tarefas, não gerar/imprimir etiquetas físicas, não alterar `.env` ou `config.local.json` e não realizar deploy/merge/branch reset. Outras instruções históricas de homologação/release NÃO devem ser executadas pelo agente limitado. Correções justificadas ficam somente na PR existente, sem publicação em produção.
+
 # PrintServer — regras para Antigravity/Codex
 
 ## Escopo
