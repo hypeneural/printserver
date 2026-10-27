@@ -8,6 +8,9 @@ import {labelPdf} from './pdf.mjs';
 import {crmPngToLabelPdf} from './crm-label-pdf.mjs';
 
 const MAX_JOBS=500;
+// Backpressure: pending CRMs PNG/PDF are much larger than the legacy text labels.
+// Do not serialize an unbounded set of raster PDFs every time the agent polls.
+const DEFAULT_MAX_PENDING_PDF_BASE64=32*1024*1024;
 // Opt-in: refuse outdated plain labels during Christmas rollout.
 const REQUIRE_CRM_ARTWORK=process.env.PRINTSERVER_REQUIRE_CRM_ARTWORK==='1';
 const MAX_PNG_BASE64=4*1024*1024;
@@ -36,7 +39,7 @@ const validOrder=body=>(
  ))
 );
 
-export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),requireCrmArtwork=REQUIRE_CRM_ARTWORK}){
+export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),requireCrmArtwork=REQUIRE_CRM_ARTWORK,maxPendingPdfBase64=DEFAULT_MAX_PENDING_PDF_BASE64}){
  if(!validSecret(adminToken)||!validSecret(agentToken)||safeEqual(adminToken,agentToken)){
   throw Error('printserver_missing_or_reused_secrets');
  }
@@ -170,6 +173,9 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),
       expires_at:ts+15*60*1000,state:'queued',
       pdf_base64:pdf.toString('base64'),sha256:hash(pdf)
      };
+     // Includes leased jobs still awaiting ACK; never lose accepted work to memory pressure.
+     const bytesPending=jobs.reduce((bytes,j)=>bytes+(typeof j.pdf_base64==='string'?j.pdf_base64.length:0),0);
+     if(bytesPending+job.pdf_base64.length>maxPendingPdfBase64)throw fail(503,'queue_capacity_exceeded');
      jobs.push(job);
      seenArrivalOrders.add(body.order_id);
      try{
