@@ -179,6 +179,9 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),
    const expected=role==='agent'?agentToken:adminToken;
    const auth=req.headers.authorization||'';
    if(!safeEqual(auth.startsWith('Bearer ')?auth.slice(7):'',expected))throw fail(401,'unauthorized');
+   if(req.method==='GET'&&u.pathname==='/v1/capabilities'&&role==='admin')return respond(res,200,{
+    service:'evydencia-printserver',capabilities:{independent_order_labels:true,order_label_receipts:true}
+   });
    if(req.method==='GET'&&u.pathname==='/v1/agent/status'&&role==='admin'){
     // Transient signal derived from authenticated polls; no PII and no disk writes.
     // Agent polls only while printer and spooler report ready. A reboot starts offline.

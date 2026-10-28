@@ -39,6 +39,25 @@ job, pode persistir expiração ou a migração dos metadados da fila existente.
 `GET /healthz` anuncia `capabilities.independent_order_labels=true` e
 `capabilities.order_label_receipts=true`, sem divulgar credenciais ou pedidos.
 
+Para descoberta do contrato pelo conector, usar `GET /v1/capabilities` com a
+credencial admin, que devolve:
+
+```json
+{
+  "service": "evydencia-printserver",
+  "capabilities": {
+    "independent_order_labels": true,
+    "order_label_receipts": true
+  }
+}
+```
+
+Na origem pública compartilhada, `/healthz` pode pertencer ao gateway MCP,
+enquanto somente `/v1/*` é encaminhado ao broker. A rota autenticada evita
+confundir o health do MCP com capacidades do broker; não altera a fila nem
+substitui o `/healthz` existente para sondas locais. O token do agente Windows
+não autoriza essa consulta administrativa.
+
 ## Persistência e compatibilidade
 
 O arquivo mantém `version:2`, `jobs` e `seen_arrival_orders`. O campo aditivo

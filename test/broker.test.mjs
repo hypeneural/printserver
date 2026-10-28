@@ -252,6 +252,23 @@ test('independent order lookup is authenticated, validates IDs and does not clai
  }finally{await a.close()}
 });
 
+test('shared-origin capabilities use an admin-only v1 route without changing health or queue state',async()=>{
+ const a=await setup();
+ try{
+  const expected={service:'evydencia-printserver',capabilities:{independent_order_labels:true,order_label_receipts:true}};
+  const capabilities=await call(a.root,'/v1/capabilities',null,'admin','GET');
+  assert.equal(capabilities.status,200);
+  assert.deepEqual(capabilities.body,expected);
+  assert.equal((await call(a.root,'/v1/capabilities',null,'agent','GET')).status,401);
+  assert.equal((await fetch(a.root+'/v1/capabilities')).status,401);
+  assert.equal((await call(a.root,'/v1/capabilities',{},'admin','POST')).status,404);
+  const health=await fetch(a.root+'/healthz');
+  assert.equal(health.status,200);
+  assert.deepEqual(await health.json(),{ok:true,...expected});
+  assert.equal(await readFile(join(a.dir,'state.json'),'utf8').catch(()=>''),'','capability reads must not create queue state');
+ }finally{await a.close()}
+});
+
 test('independent labels deduplicate across purposes and concurrent callers',async()=>{
  const a=await setup();
  try{
