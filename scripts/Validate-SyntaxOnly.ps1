@@ -9,6 +9,7 @@ $paths=@(
  'windows/install-task.ps1',
  'windows/Invoke-SyntheticPrintTest.ps1',
  'windows/Invoke-CrmArtworkPrintTest.ps1',
+ 'windows/Test-LabelRuntimeReadOnly.ps1',
  'scripts/Test-LabelPrinter.ps1',
  'scripts/Prepare-SumatraPortable.ps1',
  'scripts/Validate-SyntaxOnly.ps1'
