@@ -54,7 +54,8 @@ removidos depois da retenção existente; recibos e tombstones permanecem.
 
 Recibos corrompidos, duplicados ou vinculados a trabalhos conflitantes impedem
 inicialização. Não escolher arbitrariamente um dos trabalhos nem apagar a fila
-para contornar a falha.
+para contornar a falha. A checagem inclui estado e metadados divergentes mesmo
+quando o ID do trabalho coincide, para impedir regressão de `spooled` a `queued`.
 
 No rollout, publicar o broker compatível antes do MCP, sem trabalho ativo. O
 rollback preferido do MCP mantém este broker compatível. Um downgrade do broker

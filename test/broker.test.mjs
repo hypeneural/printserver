@@ -429,3 +429,36 @@ test('independent corrupt receipts fail closed and conflicting order jobs are no
   await assert.rejects(makeBroker({file,adminToken:ADMIN,agentToken:AGENT}),/conflicting_order_label_receipts/);
  }finally{await rm(dir,{recursive:true,force:true})}
 });
+
+test('independent restore rejects state or metadata conflicts for the same durable job',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'evyd-conflicting-receipt-'));const file=join(dir,'state.json');
+ const now=Date.now(),job={...data,job_id:RID,state:'queued',render_source:'minimal',created_at:now,expires_at:now+60000,pdf_base64:'synthetic'};
+ const receipt={job_id:RID,request_id:data.request_id,order_id:data.order_id,state:'queued',render_source:'minimal',created_at:now,expires_at:now+60000,purpose:'arrival',status_key:data.status_key};
+ try{
+  for(const change of [{state:'spooled'},{request_id:'70bca7a8-cdb7-4b8c-a2a8-68ebae46889e'},{created_at:now-1},{render_source:'crm_canonical'},{purpose:'order_label'}]){
+   await writeFile(file,JSON.stringify({version:2,jobs:[job],seen_arrival_orders:[5001],order_label_receipts:[{...receipt,...change}]}));
+   await assert.rejects(makeBroker({file,adminToken:ADMIN,agentToken:AGENT}),/conflicting_order_label_receipts/);
+  }
+  await writeFile(file,JSON.stringify({version:2,jobs:[],order_label_receipts:[{...receipt,status_key:'order_aborted'}]}));
+  await assert.rejects(makeBroker({file,adminToken:ADMIN,agentToken:AGENT}),/invalid_order_label_receipts/);
+ }finally{await rm(dir,{recursive:true,force:true})}
+});
+
+test('independent missing active jobs remain uncertain receipts after restore',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'evyd-missing-active-job-'));const file=join(dir,'state.json');
+ const now=Date.now();
+ try{
+  for(const state of ['queued','claimed']){
+   const receipt={job_id:RID,request_id:data.request_id,order_id:data.order_id,state,render_source:'minimal',created_at:now,expires_at:now+60000,purpose:'order_label',status_key:'order_aborted'};
+   await writeFile(file,JSON.stringify({version:2,jobs:[],order_label_receipts:[receipt]}));
+   const b=await makeBroker({file,adminToken:ADMIN,agentToken:AGENT});const server=await b.listen(0);const root='http://127.0.0.1:'+server.address().port;
+   try{
+    const lookup=await call(root,'/v1/orders/5001/label-job',null,'admin','GET');
+    assert.equal(lookup.body.state,state);
+    assert.equal(lookup.body.needs_reconciliation,true);
+    assert.equal((await call(root,'/v1/jobs',{...data,purpose:'order_label'})).status,409);
+    assert.equal((await call(root,'/v1/agent/claim',{},'agent')).body.job,null);
+   }finally{await new Promise(done=>server.close(done))}
+  }
+ }finally{await rm(dir,{recursive:true,force:true})}
+});

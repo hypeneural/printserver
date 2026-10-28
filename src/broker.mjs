@@ -54,7 +54,8 @@ const publicJob=j=>({
  ...(j.error_code?{error_code:j.error_code}:{})
 });
 const validReceipt=r=>r&&validOrderId(r.order_id)&&uuid.test(r.job_id||'')&&uuid.test(r.request_id||'')&&
- JOB_STATES.has(r.state)&&LABEL_PURPOSES.has(r.purpose)&&validStatusMetadata(r.status_key)&&
+ JOB_STATES.has(r.state)&&LABEL_PURPOSES.has(r.purpose)&&
+ (r.purpose==='arrival'?r.status_key===ALLOWED_STATUS:validStatusMetadata(r.status_key))&&
  ['minimal','crm_canonical'].includes(r.render_source)&&
  Number.isSafeInteger(r.created_at)&&r.created_at>=0&&Number.isSafeInteger(r.expires_at)&&r.expires_at>=0&&
  (r.completed_at===undefined||(Number.isSafeInteger(r.completed_at)&&r.completed_at>=0))&&
@@ -86,7 +87,8 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),
   }
   for(const job of jobs)if(LABEL_PURPOSES.has(job.purpose)&&validOrderId(job.order_id)){
    const previous=receipts.get(job.order_id);
-   if(previous&&previous.job_id!==job.job_id)throw Error('conflicting_order_label_receipts');
+   // A mismatched snapshot must never regress a completed receipt to queued work.
+   if(previous&&JSON.stringify(previous)!==JSON.stringify(publicJob(job)))throw Error('conflicting_order_label_receipts');
    seenArrivalOrders.add(job.order_id);remember(job);
   }
  }catch(e){if(e.code==='ENOENT')jobs=[];else throw e}
