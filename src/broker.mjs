@@ -51,7 +51,8 @@ const publicJob=j=>({
  purpose:j.purpose||'arrival',
  status_key:Object.hasOwn(j,'status_key')?j.status_key:((j.purpose||'arrival')==='arrival'?ALLOWED_STATUS:null),
  ...(j.completed_at!==undefined?{completed_at:j.completed_at}:{}),
- ...(j.error_code?{error_code:j.error_code}:{})
+ ...(j.error_code?{error_code:j.error_code}:{}),
+ ...(j.reprint_of_job_id?{reprint_of_job_id:j.reprint_of_job_id}:{})
 });
 const validReceipt=r=>r&&validOrderId(r.order_id)&&uuid.test(r.job_id||'')&&uuid.test(r.request_id||'')&&
  JOB_STATES.has(r.state)&&LABEL_PURPOSES.has(r.purpose)&&
@@ -59,14 +60,15 @@ const validReceipt=r=>r&&validOrderId(r.order_id)&&uuid.test(r.job_id||'')&&uuid
  ['minimal','crm_canonical'].includes(r.render_source)&&
  Number.isSafeInteger(r.created_at)&&r.created_at>=0&&Number.isSafeInteger(r.expires_at)&&r.expires_at>=0&&
  (r.completed_at===undefined||(Number.isSafeInteger(r.completed_at)&&r.completed_at>=0))&&
- (r.error_code===undefined||(typeof r.error_code==='string'&&/^[a-z_]{1,80}$/.test(r.error_code)));
+ (r.error_code===undefined||(typeof r.error_code==='string'&&/^[a-z_]{1,80}$/.test(r.error_code)))&&
+ (r.reprint_of_job_id===undefined||uuid.test(r.reprint_of_job_id));
 
 export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),requireCrmArtwork=REQUIRE_CRM_ARTWORK,maxPendingPdfBase64=DEFAULT_MAX_PENDING_PDF_BASE64}){
  if(!validSecret(adminToken)||!validSecret(agentToken)||safeEqual(adminToken,agentToken)){
   throw Error('printserver_missing_or_reused_secrets');
  }
  await mkdir(dirname(file),{recursive:true,mode:0o700});
- let jobs,seenArrivalOrders=new Set(),receipts=new Map(),receiptsDirty=false;
+ let jobs,seenArrivalOrders=new Set(),receipts=new Map(),receiptsDirty=false,history=[];
  const remember=job=>{
   const receipt=publicJob(job);
   if(!validReceipt(receipt))throw Error('invalid_order_label_receipt');
@@ -85,11 +87,21 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),
    if(!validReceipt(input)||receipts.has(input.order_id))throw Error('invalid_order_label_receipts');
    const receipt=publicJob(input);receipts.set(receipt.order_id,receipt);seenArrivalOrders.add(receipt.order_id);
   }
+  if(obj.order_label_history!==undefined&&!Array.isArray(obj.order_label_history))throw Error('invalid_order_label_history');
+  history=obj.order_label_history||[];
+  const historyIds=new Set();
+  for(const old of history){
+   if(!validReceipt(old)||historyIds.has(old.job_id)||old.reprint_of_job_id===old.job_id)
+    throw Error('invalid_order_label_history');
+   historyIds.add(old.job_id);
+  }
   for(const job of jobs)if(LABEL_PURPOSES.has(job.purpose)&&validOrderId(job.order_id)){
-   const previous=receipts.get(job.order_id);
-   // A mismatched snapshot must never regress a completed receipt to queued work.
-   if(previous&&JSON.stringify(previous)!==JSON.stringify(publicJob(job)))throw Error('conflicting_order_label_receipts');
-   seenArrivalOrders.add(job.order_id);remember(job);
+   const previous=receipts.get(job.order_id),snapshot=publicJob(job);
+   if(previous&&JSON.stringify(previous)!==JSON.stringify(snapshot)){
+    if(!history.some(old=>old.job_id===job.job_id&&JSON.stringify(old)===JSON.stringify(snapshot)))
+     throw Error('conflicting_order_label_receipts');
+   }else remember(job);
+   seenArrivalOrders.add(job.order_id);
   }
  }catch(e){if(e.code==='ENOENT')jobs=[];else throw e}
  let lastAgentPollAt=null;
@@ -102,7 +114,7 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),
  const save=async()=>{
   const tmp=file+'.'+process.pid+'.'+randomBytes(4).toString('hex')+'.tmp';
   try{
-   await writeFile(tmp,JSON.stringify({version:2,jobs,seen_arrival_orders:[...seenArrivalOrders],order_label_receipts:[...receipts.values()]}),{mode:0o600,flag:'wx',flush:true});
+   await writeFile(tmp,JSON.stringify({version:3,jobs,seen_arrival_orders:[...seenArrivalOrders],order_label_receipts:[...receipts.values()],order_label_history:history}),{mode:0o600,flag:'wx',flush:true});
    await rename(tmp,file);
    receiptsDirty=false;
   }finally{
@@ -113,7 +125,7 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),
  // Snapshot one job, not the entire queue, to keep the 5-second agent poll cheap.
  const persistJobMutation=async(job,mutate)=>{
   const before={...job},beforeReceipt=receipts.get(job.order_id),beforeDirty=receiptsDirty;
-  try{mutate();remember(job);await save()}
+  try{mutate();if(receipts.get(job.order_id)?.job_id===job.job_id)remember(job);await save()}
   catch(e){
    // Never expose an ACK or claim that was not committed to disk.
    for(const key of Object.keys(job))delete job[key];
@@ -135,7 +147,7 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),
   for(const j of jobs){
    if(j.state==='queued'&&j.expires_at<=ts){j.state='expired';delete j.pdf_base64;changed=true}
    if(j.state==='claimed'&&j.lease_expires_at<=ts){j.state='unknown';delete j.pdf_base64;delete j.lease_token;changed=true}
-   if(LABEL_PURPOSES.has(j.purpose))remember(j);
+   if(LABEL_PURPOSES.has(j.purpose)&&receipts.get(j.order_id)?.job_id===j.job_id)remember(j);
   }
   // Retain tiny per-order tombstones indefinitely; purge large job payload metadata after 7 days.
   const before=jobs.length;
@@ -151,7 +163,8 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),
    needs_reconciliation:Boolean(receipt
     ? !REPLAYABLE_STATES.has(receipt.state)||missingActiveJob||(requireCrmArtwork&&receipt.render_source!=='crm_canonical')
     : seenArrivalOrders.has(orderId)),
-   printed_physically:false
+   printed_physically:false,
+   reprint_count:history.filter(old=>old.order_id===orderId).length
   };
  };
  // Idle poll/GET never writes to disk unless state has actually changed.
@@ -199,22 +212,34 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),
     if(!/^[1-9]\d*$/.test(raw)||!validOrderId(orderId))throw fail(400,'invalid_order_id');
     return await exclusive(async()=>{await persistPrune();return respond(res,200,orderLookup(orderId))});
    }
-      if(req.method==='POST'&&u.pathname==='/v1/jobs'&&role==='admin'){
+      const reprint=u.pathname==='/v1/jobs/reprint';
+   if(req.method==='POST'&&(u.pathname==='/v1/jobs'||reprint)&&role==='admin'){
     const body=await readJson(req,MAX_PNG_BASE64+8192);
     if(!validOrder(body))throw fail(422,'invalid_or_unconfirmed_order');
+    if(reprint&&(body.purpose!=='order_label'||!uuid.test(body.reprint_of_job_id||'')||!body.label_png_base64))
+     throw fail(422,'invalid_reprint_request');
     if(requireCrmArtwork&&!body.label_png_base64)throw fail(422,'crm_artwork_required');
     return await exclusive(async()=>{
      await persistPrune();
      const existing=receipts.get(body.order_id);
-     if(existing){
-      // A previously spooled MINIMAL label must never be reported as a successful
-      // replay of the canonical Christmas artwork during the strict rollout.
-      // The tombstone still wins: never enqueue a second physical label here.
-      if(orderLookup(body.order_id).needs_reconciliation)
-       return respond(res,409,{error:'manual_reconciliation_required',job:publicJob(existing)});
-      return respond(res,200,{replay:true,job:publicJob(existing)});
+     if(reprint){
+      const prior=[...history,...receipts.values()].find(y=>y.request_id===body.request_id);
+      if(prior){
+       if(prior.order_id!==body.order_id||prior.reprint_of_job_id!==body.reprint_of_job_id)
+        return respond(res,409,{error:'request_id_conflict'});
+       return respond(res,200,{replay:true,job:publicJob(prior)});
+      }
+      if(!existing||existing.job_id!==body.reprint_of_job_id||existing.state!=='spooled'||
+         existing.render_source!=='crm_canonical'||orderLookup(body.order_id).needs_reconciliation)
+       return respond(res,409,{error:'reprint_reconciliation_required',job:existing?publicJob(existing):null});
+     }else{
+      if(existing){
+       if(orderLookup(body.order_id).needs_reconciliation)
+        return respond(res,409,{error:'manual_reconciliation_required',job:publicJob(existing)});
+       return respond(res,200,{replay:true,job:publicJob(existing)});
+      }
+      if(seenArrivalOrders.has(body.order_id))return respond(res,409,{error:'manual_reconciliation_required',job:null});
      }
-     if(seenArrivalOrders.has(body.order_id))return respond(res,409,{error:'manual_reconciliation_required',job:null});
      if(jobs.length>=MAX_JOBS)throw fail(503,'queue_full');
      let pdf,renderSource='minimal';
      if(body.label_png_base64){
@@ -228,21 +253,24 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),
       job_id:randomUUID(),request_id:body.request_id,order_id:body.order_id,
       operator_id:body.operator_id,purpose:body.purpose,status_key:body.status_key,render_source:renderSource,created_at:ts,
       expires_at:ts+15*60*1000,state:'queued',
+      ...(reprint?{reprint_of_job_id:body.reprint_of_job_id}:{}),
       pdf_base64:pdf.toString('base64'),sha256:hash(pdf)
      };
      // Includes leased jobs still awaiting ACK; never lose accepted work to memory pressure.
      const bytesPending=jobs.reduce((bytes,j)=>bytes+(typeof j.pdf_base64==='string'?j.pdf_base64.length:0),0);
      if(bytesPending+job.pdf_base64.length>maxPendingPdfBase64)throw fail(503,'queue_capacity_exceeded');
+     const wasSeen=seenArrivalOrders.has(body.order_id);
      jobs.push(job);
      seenArrivalOrders.add(body.order_id);
-     const beforeReceipt=receipts.get(body.order_id),beforeDirty=receiptsDirty;
+     const beforeReceipt=receipts.get(body.order_id),beforeDirty=receiptsDirty,beforeHistory=history.length;
      try{
+      if(reprint)history.push(publicJob(existing));
       remember(job);
       await save();
      }catch(e){
-      // If persistence fails, never leave an uncommitted job claimable by the agent.
       jobs.pop();
-      seenArrivalOrders.delete(body.order_id);
+      history.length=beforeHistory;
+      if(!wasSeen)seenArrivalOrders.delete(body.order_id);
       if(beforeReceipt)receipts.set(body.order_id,beforeReceipt);else receipts.delete(body.order_id);
       receiptsDirty=beforeDirty;
       throw e;
@@ -250,12 +278,26 @@ export async function makeBroker({file,adminToken,agentToken,now=()=>Date.now(),
      return respond(res,201,{replay:false,job:publicJob(job)});
     });
    }
+   const historyPath=/^\/v1\/orders\/([^/]+)\/label-history$/.exec(u.pathname);
+   if(req.method==='GET'&&historyPath&&role==='admin'){
+    const raw=historyPath[1],orderId=Number(raw);
+    if(!/^[1-9]\d*$/.test(raw)||!validOrderId(orderId))throw fail(400,'invalid_order_id');
+    return await exclusive(async()=>{
+     await persistPrune();
+     const latest=receipts.get(orderId);
+     return respond(res,200,{order_id:orderId,history:[
+      ...history.filter(old=>old.order_id===orderId).map(publicJob),
+      ...(latest?[publicJob(latest)]:[])
+     ],printed_physically:false});
+    });
+   }
    if(req.method==='GET'&&u.pathname.startsWith('/v1/jobs/')&&role==='admin'){
     const id=decodeURIComponent(u.pathname.slice('/v1/jobs/'.length));
     if(!uuid.test(id))throw fail(400,'invalid_job_id');
     return await exclusive(async()=>{
      await persistPrune();
-     const job=jobs.find(x=>x.job_id===id);
+     const job=jobs.find(x=>x.job_id===id)||history.find(x=>x.job_id===id)||
+      [...receipts.values()].find(x=>x.job_id===id);
      return job?respond(res,200,{job:publicJob(job)}):respond(res,404,{error:'not_found'});
     });
    }
